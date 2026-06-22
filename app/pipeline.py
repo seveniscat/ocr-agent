@@ -16,7 +16,7 @@ import base64
 import logging
 
 from .config import Settings
-from .schemas import AnalyzeResponse, ImageMeta, Item
+from .schemas import AnalyzeResponse, ImageMeta, Item, OCROptions
 from .tiling import (
     GridSpec,
     crop_tile,
@@ -87,9 +87,30 @@ class Pipeline:
 
     # -- main entry ---------------------------------------------------------
 
-    def run(self, image_data: bytes, annotate: bool = False) -> AnalyzeResponse:
+    def run(
+        self,
+        image_data: bytes,
+        annotate: bool = False,
+        options: "OCROptions | None" = None,
+    ) -> AnalyzeResponse:
         img = load_image(image_data)
         h, w = img.shape[:2]
+
+        # --- Preprocess: crop blank margins around the die-line artwork. ---
+        # The cropped image becomes the working image for everything below, so
+        # all item coordinates are naturally in cropped space; the one `crop`
+        # offset is echoed back in image_meta for callers to remap to the
+        # original. Blank image → no crop, fall through unchanged.
+        crop_box = None
+        if self.settings.preprocess_autocrop:
+            from .preprocess import autocrop
+
+            img, crop_box = autocrop(
+                img,
+                threshold=self.settings.preprocess_autocrop_threshold,
+                padding=self.settings.preprocess_autocrop_padding,
+            )
+            h, w = img.shape[:2]
 
         grid = plan_grid(
             w, h,
@@ -103,13 +124,34 @@ class Pipeline:
         ocr = self._get_ocr()
         codes = self._get_codes_or_none()  # may be None (lib missing) → skip
 
+        # Translate per-request OCR overrides to detector call args.
+        if options is not None:
+            predict_kwargs = options.to_predict_kwargs()
+            gran = options.granularity
+            gap = options.paragraph_gap_ratio
+            xov = options.paragraph_x_overlap
+        else:
+            predict_kwargs, gran, gap, xov = {}, None, None, None
+
         # Per-tile processing.
         for spec in specs:
             tile = crop_tile(img, spec)
 
             # --- text (primary channel; errors here are fatal) ---
-            for det in ocr.detect_and_recognize(tile):
+            for det in ocr.detect_and_recognize(
+                tile,
+                predict_kwargs=predict_kwargs,
+                granularity=gran,
+                paragraph_gap_ratio=gap,
+                paragraph_x_overlap=xov,
+            ):
                 global_poly = offset_polygon(det.polygon, spec.x0, spec.y0)
+                # if paragraph mode, offset the per-line quads too
+                global_lines = None
+                if det.lines:
+                    global_lines = [
+                        offset_polygon(ln, spec.x0, spec.y0) for ln in det.lines
+                    ]
                 all_items.append(
                     Item(
                         id="tmp",
@@ -120,6 +162,8 @@ class Pipeline:
                         confidence=det.confidence,
                         source="paddleocr",
                         tile_index=spec.index,
+                        granularity=det.granularity,
+                        lines=global_lines,
                     )
                 )
 
@@ -156,8 +200,11 @@ class Pipeline:
         all_items = renumber(all_items, prefix="t")
 
         response = AnalyzeResponse(
-            image_meta=ImageMeta(width=w, height=h, tile_count=grid.count),
+            image_meta=ImageMeta(
+                width=w, height=h, tile_count=grid.count, crop=crop_box
+            ),
             items=all_items,
+            options_used=options,
         )
 
         if annotate:

@@ -12,10 +12,85 @@ from pydantic import BaseModel, Field
 
 ItemType = Literal["text", "art_text", "qr", "barcode"]
 ItemSource = Literal["paddleocr", "vlm_fallback", "pyzbar"]
+Granularity = Literal["word", "line", "paragraph"]
+
+
+class OCROptions(BaseModel):
+    """Per-request overrides for the PaddleOCR engine.
+
+    All fields are optional; ``None`` means "use the server default" (from
+    Settings). These are the parameters PaddleOCR's ``predict()`` accepts as
+    per-call overrides, so changing them does NOT reload the model — it's
+    cheap and instant. Designed for interactive tuning in the Web UI.
+
+    See https://paddlepaddle.github.io/PaddleOCR/ for parameter semantics.
+    """
+
+    # ---- DB++ text detector ----
+    text_det_thresh: Optional[float] = Field(
+        None, ge=0.0, le=1.0,
+        description="像素概率阈值。调低→更多框(召回↑)但噪声↑。艺术字救召回时调到 0.2。",
+    )
+    text_det_box_thresh: Optional[float] = Field(
+        None, ge=0.0, le=1.0,
+        description="框内平均分阈值。调低→保留淡色字/艺术字。",
+    )
+    text_det_unclip_ratio: Optional[float] = Field(
+        None, ge=0.5, le=5.0,
+        description="框放大系数。调大→框更松(容纳艺术字溢出笔画)。",
+    )
+    text_det_limit_side_len: Optional[int] = Field(
+        None, ge=320, le=4096,
+        description="检测前长边缩放目标。调大→小字更清晰但更耗内存。",
+    )
+    text_det_limit_type: Optional[Literal["max", "min"]] = Field(
+        None, description="max=只缩小保细节; min=只放大提速。",
+    )
+
+    # ---- recognizer ----
+    text_rec_score_thresh: Optional[float] = Field(
+        None, ge=0.0, le=1.0,
+        description="识别置信度门槛。低于此值的框被丢弃。调低→保留更多低质量识别。",
+    )
+    use_textline_orientation: Optional[bool] = Field(
+        None, description="是否做文字行方向分类(旋转/倒置文字)。关闭→更快。",
+    )
+
+    # ---- output granularity ----
+    granularity: Optional[Granularity] = Field(
+        None, description="word=词框 / line=行框(默认) / paragraph=段落块(合并行)。",
+    )
+    paragraph_gap_ratio: Optional[float] = Field(
+        None, ge=0.0, le=3.0,
+        description="[paragraph] 行间距 ≤ 此值×行高 才合并。调大→更激进合并。",
+    )
+    paragraph_x_overlap: Optional[float] = Field(
+        None, ge=0.0, le=1.0,
+        description="[paragraph] 行水平重叠比例下限。",
+    )
+
+    def to_predict_kwargs(self) -> dict:
+        """Translate to the kwargs PaddleOCR.predict() accepts (snake_case→its names)."""
+        kw: dict = {}
+        if self.text_det_thresh is not None:
+            kw["text_det_thresh"] = self.text_det_thresh
+        if self.text_det_box_thresh is not None:
+            kw["text_det_box_thresh"] = self.text_det_box_thresh
+        if self.text_det_unclip_ratio is not None:
+            kw["text_det_unclip_ratio"] = self.text_det_unclip_ratio
+        if self.text_det_limit_side_len is not None:
+            kw["text_det_limit_side_len"] = self.text_det_limit_side_len
+        if self.text_det_limit_type is not None:
+            kw["text_det_limit_type"] = self.text_det_limit_type
+        if self.text_rec_score_thresh is not None:
+            kw["text_rec_score_thresh"] = self.text_rec_score_thresh
+        if self.use_textline_orientation is not None:
+            kw["use_textline_orientation"] = self.use_textline_orientation
+        return kw
 
 
 class Item(BaseModel):
-    """One detected element (text line, art text, or code)."""
+    """One detected element (text line/word/paragraph, art text, or code)."""
 
     id: str
     type: ItemType
@@ -30,17 +105,29 @@ class Item(BaseModel):
     source: ItemSource
     # which tile produced it (None for whole-image); useful for debugging
     tile_index: Optional[int] = None
+    # output granularity of the text box: word | line | paragraph
+    granularity: Optional[Granularity] = None
+    # for paragraph granularity: the per-line quads that were merged into this
+    # block (kept so the UI / downstream can still draw individual lines)
+    lines: Optional[list[list[list[float]]]] = None
 
 
 class ImageMeta(BaseModel):
     width: int
     height: int
     tile_count: int = 1
+    # Original-image coords of the auto-crop box [x0, y0, x1, y1] (exclusive end).
+    # None when no crop was applied (feature disabled, or the image was blank).
+    # All item polygons/bboxes below are in the *cropped* space, so to map an
+    # item back to the original image add crop[0]/crop[1] to its x/y.
+    crop: Optional[list[int]] = None
 
 
 class AnalyzeResponse(BaseModel):
     image_meta: ImageMeta
     items: list[Item]
+    # echo back the effective options used (helps the UI know what was applied)
+    options_used: Optional[OCROptions] = None
     annotated_image_b64: Optional[str] = None
     # populated only for async responses
     task_id: Optional[str] = None
@@ -51,3 +138,22 @@ class TaskStatus(BaseModel):
     status: Literal["pending", "running", "done", "error"]
     result: Optional[AnalyzeResponse] = None
     error: Optional[str] = None
+
+
+class PreprocessResponse(BaseModel):
+    """Result of the standalone ``POST /preprocess`` endpoint.
+
+    Lets the UI preview the auto-crop *without* running OCR. ``crop`` is the box
+    in **original** coords; ``cropped_image_b64`` is the cropped preview (PNG,
+    base64). When the image is blank / nothing to crop, ``crop`` is null and the
+    returned preview equals the full original.
+    """
+
+    width: int                       # original image width (px)
+    height: int                      # original image height (px)
+    crop: Optional[list[int]] = None  # [x0, y0, x1, y1] original coords, or null
+    cropped_width: Optional[int] = None   # cropped preview width
+    cropped_height: Optional[int] = None  # cropped preview height
+    cropped_image_b64: Optional[str] = None
+    # fraction of pixels removed by the crop (0.0 = nothing cropped)
+    removed_ratio: float = 0.0

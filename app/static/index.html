@@ -40,7 +40,6 @@
     position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
     color: var(--muted); text-align: center; padding: 40px; font-size: 13px; pointer-events: none;
   }
-  /* The canvas: a transformed container. translate3d + scale for GPU. */
   .canvas {
     position: absolute; top: 0; left: 0;
     transform-origin: 0 0; will-change: transform; line-height: 0;
@@ -57,7 +56,6 @@
   .canvas svg polygon.art { stroke: var(--art); }
   .canvas svg polygon.qr { stroke: var(--qr); }
   .canvas svg polygon.barcode { stroke: var(--barcode); }
-  /* stroke-width must be divided by zoom to stay constant in screen px */
   .canvas svg polygon.hl {
     fill: rgba(255,255,255,.18);
     filter: drop-shadow(0 0 4px currentColor);
@@ -67,7 +65,6 @@
     stroke-width: 3px; font-size: 13px; font-weight: 600;
   }
 
-  /* zoom HUD */
   .hud {
     position: absolute; bottom: 12px; left: 12px; display: flex; gap: 6px;
     background: rgba(0,0,0,.6); border-radius: 6px; padding: 4px;
@@ -86,25 +83,100 @@
   }
 
   /* ---- right: panel ---- */
-  .panel { background: var(--panel); border-left: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0; }
-  .upload {
-    padding: 14px; border-bottom: 1px solid var(--border);
-    display: flex; flex-direction: column; gap: 10px;
-  }
+  .panel { background: var(--panel); border-left: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+  .upload { padding: 14px; border-bottom: 1px solid var(--border); }
   .dropzone {
-    border: 1.5px dashed var(--border); border-radius: 8px; padding: 18px;
-    text-align: center; cursor: pointer; transition: all .15s; font-size: 12px;
-    color: var(--muted);
+    border: 1.5px dashed var(--border); border-radius: 8px; padding: 16px;
+    text-align: center; cursor: pointer; transition: all .15s; font-size: 12px; color: var(--muted);
   }
   .dropzone:hover, .dropzone.over { border-color: var(--accent); color: var(--text); background: var(--panel-2); }
   .dropzone strong { color: var(--text); display: block; margin-bottom: 4px; font-size: 13px; }
-  .opts { display: flex; gap: 12px; align-items: center; font-size: 12px; color: var(--muted); flex-wrap: wrap; }
-  .opts label { display: flex; align-items: center; gap: 5px; cursor: pointer; }
-  .status { font-size: 12px; color: var(--muted); min-height: 18px; }
+  .dropzone .filename { color: var(--accent-2); font-size: 11px; margin-top: 6px; word-break: break-all; }
+
+  .action-row { display: flex; gap: 8px; margin-top: 10px; }
+  .btn {
+    flex: 1; padding: 9px; border-radius: 6px; border: 1px solid var(--border);
+    background: var(--panel-2); color: var(--text); font-size: 13px; cursor: pointer; font-weight: 500;
+    transition: all .12s;
+  }
+  .btn:hover:not(:disabled) { border-color: var(--accent); }
+  .btn:disabled { opacity: .4; cursor: not-allowed; }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  .btn.primary:hover:not(:disabled) { background: #3a78f0; }
+  .btn.ghost { flex: 0 0 auto; }
+
+  .status { font-size: 12px; color: var(--muted); min-height: 18px; margin-top: 8px; }
   .status.busy { color: var(--warn); }
   .status.error { color: var(--err); }
+  .status.ok { color: var(--accent-2); }
 
-  .tabs { display: flex; border-bottom: 1px solid var(--border); }
+  /* params panel */
+  .params { border-top: 1px solid var(--border); max-height: 45%; overflow-y: auto; }
+  .params summary {
+    padding: 9px 14px; cursor: pointer; font-size: 12px; color: var(--muted);
+    user-select: none; display: flex; align-items: center; gap: 6px;
+  }
+  .params summary:hover { color: var(--text); }
+  .params summary .chev { transition: transform .15s; }
+  .params[open] summary .chev { transform: rotate(90deg); }
+  .params summary .badge {
+    margin-left: auto; font-size: 10px; background: var(--accent); color: #fff;
+    padding: 1px 6px; border-radius: 8px; display: none;
+  }
+  .params summary .badge.show { display: inline; }
+  .param-group { padding: 4px 14px 10px; border-top: 1px solid var(--border); }
+  .param-group h4 { margin: 8px 0 6px; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
+  .field { margin-bottom: 9px; }
+  .field label { display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 3px; }
+  .field label .val { color: var(--accent); font-family: "SF Mono", Menlo, monospace; font-size: 11px; }
+  .field .hint { font-size: 10px; color: var(--muted); margin-top: 2px; background: none; padding: 0; position: static; backdrop-filter: none; }
+  .field input[type=range] { width: 100%; accent-color: var(--accent); }
+  .field select { width: 100%; background: var(--panel-2); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 4px 6px; font-size: 12px; }
+  .field input[type=checkbox] { accent-color: var(--accent); }
+  .seg { display: flex; gap: 0; border: 1px solid var(--border); border-radius: 4px; overflow: hidden; }
+  .seg button {
+    flex: 1; background: var(--panel-2); color: var(--muted); border: none; padding: 5px; font-size: 11px; cursor: pointer;
+  }
+  .canvas svg polygon.crop-frame {
+    fill: rgba(245, 158, 11, .08); stroke: var(--warn); stroke-width: 2;
+    stroke-dasharray: 8 4;
+  }
+  .canvas svg rect.crop-mask {
+    fill: rgba(0,0,0,.55); pointer-events: none;
+  }
+  .canvas svg line.crop-size {
+    stroke: var(--warn); stroke-width: 1.5; stroke-dasharray: 4 3;
+  }
+
+  /* crop preview modal */
+  .modal {
+    position: fixed; inset: 0; background: rgba(0,0,0,.75);
+    display: none; align-items: center; justify-content: center; z-index: 100;
+    backdrop-filter: blur(4px);
+  }
+  .modal.show { display: flex; }
+  .modal .box {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    max-width: 92vw; max-height: 92vh; display: flex; flex-direction: column; overflow: hidden;
+  }
+  .modal .head {
+    padding: 12px 16px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 12px;
+  }
+  .modal .head h3 { margin: 0; font-size: 14px; }
+  .modal .head .spacer { flex: 1; }
+  .modal .head .close { cursor: pointer; color: var(--muted); font-size: 20px; line-height: 1; }
+  .modal .head .close:hover { color: var(--text); }
+  .modal .stats { padding: 10px 16px; font-size: 12px; color: var(--muted); border-bottom: 1px solid var(--border); display: flex; gap: 16px; flex-wrap: wrap; }
+  .modal .stats b { color: var(--accent-2); font-family: "SF Mono", Menlo, monospace; }
+  .modal .stats .removed { color: var(--warn); }
+  .modal .body { padding: 16px; overflow: auto; display: flex; gap: 16px; flex-wrap: wrap; justify-content: center; background: var(--bg); }
+  .modal .body .col { text-align: center; }
+  .modal .body .col .cap { font-size: 11px; color: var(--muted); margin-bottom: 6px; }
+  .modal .body img { max-width: 42vw; max-height: 60vh; border: 1px solid var(--border); border-radius: 6px; object-fit: contain; background: #fff; }
+  .seg button.active { background: var(--accent); color: #fff; }
+
+  .tabs { display: flex; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
   .tab {
     padding: 9px 14px; font-size: 12px; cursor: pointer; color: var(--muted);
     border-bottom: 2px solid transparent;
@@ -130,7 +202,8 @@
   .tag.art { background: var(--art); } .tag.qr { background: var(--qr); }
   .tag.barcode { background: var(--barcode); }
   .item .conf { color: var(--muted); font-size: 11px; margin-left: auto; }
-  .item .text { color: var(--text); word-break: break-all; }
+  .item .gran { color: var(--muted); font-size: 10px; }
+  .item .text { color: var(--text); word-break: break-all; white-space: pre-wrap; }
   .item .src { color: var(--muted); font-size: 10px; margin-top: 2px; }
 
   pre.json {
@@ -179,14 +252,118 @@
       <div class="dropzone" id="dropzone">
         <strong>拖拽图片到这里，或点击选择</strong>
         <span>PNG / JPG / WEBP · 高分辨率自动异步处理</span>
+        <div class="filename" id="filename"></div>
         <input type="file" id="fileInput" accept="image/*" hidden>
       </div>
-      <div class="opts">
-        <label><input type="checkbox" id="showLabels"> 显示文字标签</label>
-        <label><input type="checkbox" id="fitOnLoad" checked> 载入适应窗口</label>
+      <div class="action-row">
+        <button class="btn primary" id="recognizeBtn" disabled>▶ 识别</button>
+        <button class="btn" id="previewCropBtn" disabled>✂ 预览裁剪</button>
+        <button class="btn ghost" id="clearBtn" disabled>清除</button>
       </div>
       <div class="status" id="status"></div>
     </div>
+
+    <!-- Crop params -->
+    <details class="params" id="cropParams" open>
+      <summary>
+        <span class="chev">▸</span> 裁剪参数（预览裁剪）
+        <span class="badge" id="cropBadge">已改</span>
+      </summary>
+      <div class="param-group">
+        <div class="field">
+          <label>threshold <span class="val" id="v_cropt">240</span></label>
+          <input type="range" id="p_cropt" min="100" max="255" step="1" value="240">
+          <div class="hint">灰度阈值：&lt; 此值视为内容。调低→只认深色墨迹；调高→更激进（可能吃掉浅色背景）</div>
+        </div>
+        <div class="field">
+          <label>padding <span class="val" id="v_cropp">0</span></label>
+          <input type="range" id="p_cropp" min="0" max="200" step="1" value="0">
+          <div class="hint">裁剪后额外保留的边距(px)，避免内容贴边</div>
+        </div>
+      </div>
+    </details>
+
+    <!-- Tunable params -->
+    <details class="params" id="params">
+      <summary>
+        <span class="chev">▸</span> PaddleOCR 参数
+        <span class="badge" id="paramBadge">已改</span>
+      </summary>
+
+      <div class="param-group">
+        <h4>输出粒度</h4>
+        <div class="field">
+          <div class="seg" id="granSeg">
+            <button data-v="word">词 word</button>
+            <button data-v="line" class="active">行 line</button>
+            <button data-v="paragraph">段落 paragraph</button>
+          </div>
+          <div class="hint">paragraph = 把相邻行合并成段落块</div>
+        </div>
+      </div>
+
+      <div class="param-group">
+        <h4>检测器 DB++</h4>
+        <div class="field">
+          <label>text_det_thresh <span class="val" id="v_thresh">0.30</span></label>
+          <input type="range" id="p_thresh" min="0.1" max="0.6" step="0.01" value="0.3">
+          <div class="hint">像素概率阈值。调低→召回↑（艺术字救场），噪声↑</div>
+        </div>
+        <div class="field">
+          <label>text_det_box_thresh <span class="val" id="v_box">0.60</span></label>
+          <input type="range" id="p_box" min="0.1" max="0.9" step="0.05" value="0.6">
+          <div class="hint">框内平均分。调低→保留淡色字</div>
+        </div>
+        <div class="field">
+          <label>text_det_unclip_ratio <span class="val" id="v_unclip">1.8</span></label>
+          <input type="range" id="p_unclip" min="0.5" max="4" step="0.1" value="1.8">
+          <div class="hint">框放大系数。调大→艺术字溢出笔画被框住</div>
+        </div>
+        <div class="field">
+          <label>text_det_limit_side_len <span class="val" id="v_sidelen">960</span></label>
+          <input type="range" id="p_sidelen" min="320" max="2560" step="32" value="960">
+          <div class="hint">检测前长边缩放。调大→小字更清，更耗内存</div>
+        </div>
+        <div class="field">
+          <label>text_det_limit_type</label>
+          <select id="p_limittype">
+            <option value="max">max (只缩小保细节)</option>
+            <option value="min">min (只放大提速)</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="param-group">
+        <h4>识别器</h4>
+        <div class="field">
+          <label>text_rec_score_thresh <span class="val" id="v_rec">—</span></label>
+          <input type="range" id="p_rec" min="0" max="0.9" step="0.05" value="0">
+          <div class="hint">识别置信度门槛。低于此值的框被丢弃（0=用模型默认）</div>
+        </div>
+        <div class="field">
+          <label><input type="checkbox" id="p_orient" checked> use_textline_orientation</label>
+          <div class="hint">文字行方向分类（旋转/倒置字）。关闭→更快</div>
+        </div>
+      </div>
+
+      <div class="param-group" id="paraGroup">
+        <h4>段落合并（仅 paragraph）</h4>
+        <div class="field">
+          <label>gap_ratio <span class="val" id="v_gap">0.60</span></label>
+          <input type="range" id="p_gap" min="0.1" max="2" step="0.05" value="0.6">
+          <div class="hint">行间距 ≤ 此值×行高 才合并。调大→更激进合并</div>
+        </div>
+        <div class="field">
+          <label>x_overlap <span class="val" id="v_xov">0.30</span></label>
+          <input type="range" id="p_xov" min="0" max="1" step="0.05" value="0.3">
+          <div class="hint">行水平重叠比例下限</div>
+        </div>
+      </div>
+
+      <div class="param-group">
+        <button class="btn ghost" id="resetParams" style="width:100%">↺ 恢复默认参数</button>
+      </div>
+    </details>
 
     <div class="legend">
       <span><i style="background:var(--text-color)"></i>文字</span>
@@ -201,35 +378,37 @@
     </div>
 
     <div class="tabbody">
-      <div class="pane active" id="pane-items"></div>
+      <div class="pane active" id="pane-items">
+        <div style="color:var(--muted);font-size:12px;padding:14px" id="itemsPlaceholder">上传图片后点击「识别」</div>
+      </div>
       <div class="pane" id="pane-json"><pre class="json" id="jsonOut"></pre></div>
     </div>
+  </div>
+</div>
+
+<!-- Crop preview modal -->
+<div class="modal" id="cropModal">
+  <div class="box">
+    <div class="head">
+      <h3>✂ 裁剪预览</h3>
+      <span class="spacer"></span>
+      <span class="close" id="cropClose">×</span>
+    </div>
+    <div class="stats" id="cropStats"></div>
+    <div class="body" id="cropBody"></div>
   </div>
 </div>
 
 <script>
 const $ = id => document.getElementById(id);
 
-// ---- pan-zoom state ----
-const view = {
-  // image natural size
-  iw: 0, ih: 0,
-  // current transform
-  scale: 1, tx: 0, ty: 0,
-  // fit scale (to recompute on resize)
-  fitScale: 1,
-  minScale: 0.05, maxScale: 40,
-  items: [],
-  activeIdx: -1,
-};
-
+// =========================================================================
+// pan-zoom viewer (unchanged logic)
+// =========================================================================
+const view = { iw:0, ih:0, scale:1, tx:0, ty:0, fitScale:1, minScale:0.05, maxScale:40, items:[], activeIdx:-1 };
 const viewer = $('viewer'), canvas = $('canvas'), img = $('img'), svg = $('svg');
 
-// =========================================================================
-// Image load + render
-// =========================================================================
-function showImage(srcUrl, items) {
-  view.items = items || [];
+function showImage(srcUrl) {
   $('emptyHint').style.display = 'none';
   canvas.style.display = 'block';
   $('hud').style.display = 'flex';
@@ -238,264 +417,445 @@ function showImage(srcUrl, items) {
     view.iw = img.naturalWidth; view.ih = img.naturalHeight;
     svg.setAttribute('viewBox', `0 0 ${view.iw} ${view.ih}`);
     svg.setAttribute('width', view.iw); svg.setAttribute('height', view.ih);
-    drawPolygons();
-    if ($('fitOnLoad').checked) fit(); else { setTransform(); updateZoomVal(); }
+    fit();
   };
   img.src = srcUrl;
 }
-
 function drawPolygons() {
   svg.innerHTML = '';
-  const showLabels = $('showLabels').checked;
   view.items.forEach((it, idx) => {
     if (!it.polygon || it.polygon.length < 3) return;
-    const cls = it.type === 'art_text' ? 'art' : it.type === 'qr' ? 'qr' : it.type === 'barcode' ? 'barcode' : '';
-    const poly = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
-    poly.setAttribute('points', it.polygon.map(p => p[0].toFixed(1)+','+p[1].toFixed(1)).join(' '));
-    poly.setAttribute('class', cls + (idx === view.activeIdx ? ' hl' : ''));
+    const cls = it.type==='art_text'?'art':it.type==='qr'?'qr':it.type==='barcode'?'barcode':'';
+    // For paragraph granularity, draw per-line sub-boxes too (dashed) so the
+    // merged block is visually clear: solid outline = block, dashed = lines.
+    if (it.granularity === 'paragraph' && it.lines && it.lines.length > 1) {
+      it.lines.forEach(ln => {
+        if (!ln || ln.length < 3) return;
+        const sub = document.createElementNS('http://www.w3.org/2000/svg','polygon');
+        sub.setAttribute('points', ln.map(p=>p[0].toFixed(1)+','+p[1].toFixed(1)).join(' '));
+        sub.setAttribute('class', cls);
+        sub.setAttribute('fill', 'none');
+        sub.style.strokeDasharray = (4/view.scale).toFixed(2);
+        sub.dataset.idx = idx;
+        svg.appendChild(sub);
+      });
+    }
+    // Main box (solid). For paragraph this is the merged block outline.
+    const poly = document.createElementNS('http://www.w3.org/2000/svg','polygon');
+    poly.setAttribute('points', it.polygon.map(p=>p[0].toFixed(1)+','+p[1].toFixed(1)).join(' '));
+    poly.setAttribute('class', cls + (idx===view.activeIdx?' hl':''));
     poly.dataset.idx = idx;
     svg.appendChild(poly);
-    if (showLabels) {
-      const xs = it.polygon.map(p=>p[0]), ys = it.polygon.map(p=>p[1]);
-      const t = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-      t.setAttribute('x', Math.min(...xs));
-      t.setAttribute('y', Math.min(...ys) - 3);
-      t.setAttribute('class', 'label');
-      t.textContent = (it.text || it.content || '').slice(0, 30);
-      svg.appendChild(t);
-    }
   });
-  // keep stroke visually constant regardless of zoom
-  svg.querySelectorAll('polygon').forEach(p => {
-    p.style.strokeWidth = (1.5 / view.scale).toFixed(3);
-    if (p.classList.contains('hl')) p.style.strokeWidth = (3 / view.scale).toFixed(3);
+  svg.querySelectorAll('polygon').forEach(p=>{
+    const baseW = p.classList.contains('hl') ? 3 : 1.5;
+    p.style.strokeWidth = (baseW/view.scale).toFixed(3);
   });
+  drawCropOverlay();
 }
 
-// =========================================================================
-// Transform (pan-zoom core)
-// =========================================================================
-function setTransform() {
-  canvas.style.transform = `translate3d(${view.tx}px, ${view.ty}px, 0) scale(${view.scale})`;
+// Draw the auto-crop frame on the image (4 dark masks outside the crop box +
+// an amber dashed frame). Called whenever polygons redraw or the crop changes.
+function drawCropOverlay() {
+  // Remove any previous crop overlay nodes.
+  svg.querySelectorAll('.crop-mask, .crop-frame, .crop-size').forEach(n => n.remove());
+  const c = view.crop;
+  if (!c) return;
+  const W = view.iw, H = view.ih;
+  const [x0, y0, x1, y1] = c;
+  const ns = 'http://www.w3.org/2000/svg';
+  // Four rectangles covering the area OUTSIDE the crop box (the "to be cut" zone).
+  const masks = [
+    [0, 0, W, y0],         // top strip
+    [0, y1, W, H - y1],    // bottom strip
+    [0, y0, x0, y1 - y0],  // left strip
+    [x1, y0, W - x1, y1 - y0], // right strip
+  ];
+  masks.forEach(([mx, my, mw, mh]) => {
+    if (mw <= 0 || mh <= 0) return;
+    const r = document.createElementNS(ns, 'rect');
+    r.setAttribute('x', mx); r.setAttribute('y', my);
+    r.setAttribute('width', mw); r.setAttribute('height', mh);
+    r.setAttribute('class', 'crop-mask');
+    svg.appendChild(r);
+  });
+  // Amber dashed frame on the crop box.
+  const fr = document.createElementNS(ns, 'rect');
+  fr.setAttribute('x', x0); fr.setAttribute('y', y0);
+  fr.setAttribute('width', x1 - x0); fr.setAttribute('height', y1 - y0);
+  fr.setAttribute('class', 'crop-frame');
+  fr.style.strokeWidth = (2 / view.scale).toFixed(3);
+  svg.appendChild(fr);
 }
-function updateZoomVal() { $('zoomVal').textContent = Math.round(view.scale * 100) + '%'; }
-
-function clampScale(s) { return Math.max(view.minScale, Math.min(view.maxScale, s)); }
-
+function setTransform() { canvas.style.transform = `translate3d(${view.tx}px,${view.ty}px,0) scale(${view.scale})`; }
+function updateZoomVal() { $('zoomVal').textContent = Math.round(view.scale*100)+'%'; }
+function clampScale(s){ return Math.max(view.minScale, Math.min(view.maxScale, s)); }
 function fit() {
-  const r = viewer.getBoundingClientRect();
-  const pad = 24;
-  const sx = (r.width - pad) / view.iw, sy = (r.height - pad) / view.ih;
-  view.fitScale = clampScale(Math.min(sx, sy));
+  const r = viewer.getBoundingClientRect(), pad=24;
+  view.fitScale = clampScale(Math.min((r.width-pad)/view.iw, (r.height-pad)/view.ih));
   view.scale = view.fitScale;
-  // center
-  view.tx = (r.width - view.iw * view.scale) / 2;
-  view.ty = (r.height - view.ih * view.scale) / 2;
+  view.tx = (r.width - view.iw*view.scale)/2;
+  view.ty = (r.height - view.ih*view.scale)/2;
   setTransform(); updateZoomVal(); drawPolygons();
 }
-
-// Zoom around a focal point (clientX/clientY relative to viewer).
-function zoomAt(clientX, clientY, factor) {
-  const r = viewer.getBoundingClientRect();
-  const px = clientX - r.left, py = clientY - r.top;
-  // image coords under cursor before
-  const ix = (px - view.tx) / view.scale;
-  const iy = (py - view.ty) / view.scale;
-  const newScale = clampScale(view.scale * factor);
-  if (newScale === view.scale) return;
-  view.scale = newScale;
-  // keep the same image point under cursor
-  view.tx = px - ix * view.scale;
-  view.ty = py - iy * view.scale;
+function zoomAt(cx, cy, factor) {
+  const r = viewer.getBoundingClientRect(), px=cx-r.left, py=cy-r.top;
+  const ix=(px-view.tx)/view.scale, iy=(py-view.ty)/view.scale;
+  view.scale = clampScale(view.scale*factor);
+  view.tx = px - ix*view.scale; view.ty = py - iy*view.scale;
   setTransform(); updateZoomVal(); drawPolygons();
 }
+viewer.addEventListener('wheel', e=>{ if(!view.iw)return; e.preventDefault(); zoomAt(e.clientX,e.clientY, e.deltaY<0?1.12:1/1.12); }, {passive:false});
+let dragging=false,lx=0,ly=0;
+viewer.addEventListener('mousedown',e=>{if(e.button!==0)return;dragging=true;lx=e.clientX;ly=e.clientY;viewer.classList.add('grabbing');});
+window.addEventListener('mousemove',e=>{if(!dragging)return;view.tx+=e.clientX-lx;view.ty+=e.clientY-ly;lx=e.clientX;ly=e.clientY;setTransform();});
+window.addEventListener('mouseup',()=>{dragging=false;viewer.classList.remove('grabbing');});
+viewer.addEventListener('dblclick',()=>{if(view.iw)fit();});
+$('zoomIn').onclick=()=>{const r=viewer.getBoundingClientRect();zoomAt(r.left+r.width/2,r.top+r.height/2,1.25);};
+$('zoomOut').onclick=()=>{const r=viewer.getBoundingClientRect();zoomAt(r.left+r.width/2,r.top+r.height/2,1/1.25);};
+$('reset').onclick=fit; $('fit').onclick=fit;
 
 // =========================================================================
-// Mouse / wheel / touch input
+// params state
 // =========================================================================
-viewer.addEventListener('wheel', e => {
-  if (!view.iw) return;
-  e.preventDefault();
-  // Smooth zoom: pinch on trackpad also fires wheel with ctrlKey.
-  const factor = e.deltaY < 0 ? 1.12 : 1/1.12;
-  zoomAt(e.clientX, e.clientY, factor);
-}, { passive: false });
+const DEFAULTS = { thresh:0.3, box:0.6, unclip:1.8, sidelen:960, limittype:'max',
+                   rec:0, orient:true, gap:0.6, xov:0.3, gran:'line' };
+const params = {...DEFAULTS};
 
-// drag to pan
-let dragging = false, lastX = 0, lastY = 0;
-viewer.addEventListener('mousedown', e => {
-  if (e.button !== 0) return;
-  dragging = true; lastX = e.clientX; lastY = e.clientY;
-  viewer.classList.add('grabbing');
-});
-window.addEventListener('mousemove', e => {
-  if (!dragging) return;
-  view.tx += e.clientX - lastX; view.ty += e.clientY - lastY;
-  lastX = e.clientX; lastY = e.clientY;
-  setTransform();
-});
-window.addEventListener('mouseup', () => { dragging = false; viewer.classList.remove('grabbing'); });
-
-// double click → reset to fit
-viewer.addEventListener('dblclick', () => { if (view.iw) fit(); });
-
-// touch: one finger pan, two finger pinch
-let pinchStart = null;
-viewer.addEventListener('touchstart', e => {
-  if (e.touches.length === 2) {
-    const [a, b] = e.touches;
-    pinchStart = { d: dist(a, b), scale: view.scale,
-      cx: (a.clientX + b.clientX)/2, cy: (a.clientY + b.clientY)/2 };
-  } else if (e.touches.length === 1) {
-    dragging = true; lastX = e.touches[0].clientX; lastY = e.touches[0].clientY;
-  }
-}, { passive: true });
-viewer.addEventListener('touchmove', e => {
-  if (e.touches.length === 2 && pinchStart) {
-    e.preventDefault();
-    const [a, b] = e.touches;
-    const d = dist(a, b);
-    const factor = d / pinchStart.d;
-    const newScale = clampScale(pinchStart.scale * factor);
-    const r = viewer.getBoundingClientRect();
-    zoomAt(pinchStart.cx, pinchStart.cy, newScale / view.scale);
-  } else if (e.touches.length === 1 && dragging) {
-    e.preventDefault();
-    view.tx += e.touches[0].clientX - lastX; view.ty += e.touches[0].clientY - lastY;
-    lastX = e.touches[0].clientX; lastY = e.touches[0].clientY;
-    setTransform();
-  }
-}, { passive: false });
-viewer.addEventListener('touchend', e => { if (e.touches.length === 0) dragging = false; if (e.touches.length < 2) pinchStart = null; });
-function dist(a, b) { return Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY); }
-
-// HUD buttons
-$('zoomIn').onclick = () => { const r = viewer.getBoundingClientRect(); zoomAt(r.left + r.width/2, r.top + r.height/2, 1.25); };
-$('zoomOut').onclick = () => { const r = viewer.getBoundingClientRect(); zoomAt(r.left + r.width/2, r.top + r.height/2, 1/1.25); };
-$('reset').onclick = fit;
-$('fit').onclick = fit;
-
-window.addEventListener('resize', () => { /* keep current view; user can hit fit */ });
-
-// =========================================================================
-// Item ↔ polygon interaction
-// =========================================================================
-function setActive(idx) {
-  if (view.activeIdx === idx) { view.activeIdx = -1; }
-  else view.activeIdx = idx;
-  drawPolygons();
-  document.querySelectorAll('.item').forEach(el => el.classList.toggle('active', parseInt(el.dataset.idx) === view.activeIdx));
-  // bring active polygon into view
-  if (view.activeIdx >= 0) panTo(view.items[view.activeIdx]);
+function syncParamUI() {
+  $('p_thresh').value = params.thresh; $('v_thresh').textContent = params.thresh.toFixed(2);
+  $('p_box').value = params.box; $('v_box').textContent = params.box.toFixed(2);
+  $('p_unclip').value = params.unclip; $('v_unclip').textContent = params.unclip.toFixed(1);
+  $('p_sidelen').value = params.sidelen; $('v_sidelen').textContent = params.sidelen;
+  $('p_limittype').value = params.limittype;
+  $('p_rec').value = params.rec; $('v_rec').textContent = params.rec>0 ? params.rec.toFixed(2) : '默认';
+  $('p_orient').checked = params.orient;
+  $('p_gap').value = params.gap; $('v_gap').textContent = params.gap.toFixed(2);
+  $('p_xov').value = params.xov; $('v_xov').textContent = params.xov.toFixed(2);
+  document.querySelectorAll('#granSeg button').forEach(b=>b.classList.toggle('active', b.dataset.v===params.gran));
+  markChanged();
 }
+function markChanged() {
+  const changed = JSON.stringify(params) !== JSON.stringify(DEFAULTS);
+  $('paramBadge').classList.toggle('show', changed);
+}
+// wire sliders
+const bind = (inputId, valId, key, fmt) => {
+  $(inputId).addEventListener('input', e => {
+    const v = e.target.type==='checkbox' ? e.target.checked
+            : e.target.tagName==='SELECT' ? e.target.value
+            : e.target.type==='range' ? parseFloat(e.target.value) : e.target.value;
+    params[key] = v;
+    if (valId) $(valId).textContent = typeof v === 'number' ? fmt(v) : v;
+    markChanged();
+  });
+};
+bind('p_thresh','v_thresh','thresh', v=>v.toFixed(2));
+bind('p_box','v_box','box', v=>v.toFixed(2));
+bind('p_unclip','v_unclip','unclip', v=>v.toFixed(1));
+bind('p_sidelen','v_sidelen','sidelen', v=>String(v));
+bind('p_limittype',null,'limittype', v=>v);
+bind('p_rec','v_rec','rec', v=> v>0?v.toFixed(2):'默认');
+$('p_orient').addEventListener('change', e=>{params.orient=e.target.checked;markChanged();});
+bind('p_gap','v_gap','gap', v=>v.toFixed(2));
+bind('p_xov','v_xov','xov', v=>v.toFixed(2));
+document.querySelectorAll('#granSeg button').forEach(b=>b.addEventListener('click',()=>{
+  params.gran = b.dataset.v; document.querySelectorAll('#granSeg button').forEach(x=>x.classList.toggle('active',x===b)); markChanged();
+}));
+$('resetParams').onclick = () => { Object.assign(params, DEFAULTS); syncParamUI(); };
 
-// pan viewer so the given item's bbox is centered (no zoom change)
-function panTo(item) {
-  if (!item || !item.polygon) return;
-  const xs = item.polygon.map(p=>p[0]), ys = item.polygon.map(p=>p[1]);
-  const cx = (Math.min(...xs)+Math.max(...xs))/2, cy = (Math.min(...ys)+Math.max(...ys))/2;
-  const r = viewer.getBoundingClientRect();
-  view.tx = r.width/2 - cx * view.scale;
-  view.ty = r.height/2 - cy * view.scale;
-  setTransform();
+// Build OCROptions JSON from current params (only send non-defaults; server
+// falls back to its own defaults for omitted fields).
+function buildOptions() {
+  const o = {};
+  if (params.thresh !== DEFAULTS.thresh) o.text_det_thresh = params.thresh;
+  if (params.box !== DEFAULTS.box) o.text_det_box_thresh = params.box;
+  if (params.unclip !== DEFAULTS.unclip) o.text_det_unclip_ratio = params.unclip;
+  if (params.sidelen !== DEFAULTS.sidelen) o.text_det_limit_side_len = params.sidelen;
+  if (params.limittype !== DEFAULTS.limittype) o.text_det_limit_type = params.limittype;
+  if (params.rec > 0) o.text_rec_score_thresh = params.rec;
+  if (params.orient !== DEFAULTS.orient) o.use_textline_orientation = params.orient;
+  if (params.gran !== DEFAULTS.gran) o.granularity = params.gran;
+  if (params.gap !== DEFAULTS.gap) o.paragraph_gap_ratio = params.gap;
+  if (params.xov !== DEFAULTS.xov) o.paragraph_x_overlap = params.xov;
+  return o;
 }
 
 // =========================================================================
-// Upload + API
+// crop params state + preview flow
 // =========================================================================
+const CROP_DEFAULTS = { cropt: 240, cropp: 0 };
+const cropParams = { ...CROP_DEFAULTS };
+view.crop = null;  // current crop box [x0,y0,x1,y1] in image coords, or null
+
+function syncCropUI() {
+  $('p_cropt').value = cropParams.cropt; $('v_cropt').textContent = cropParams.cropt;
+  $('p_cropp').value = cropParams.cropp; $('v_cropp').textContent = cropParams.cropp;
+  markCropChanged();
+}
+function markCropChanged() {
+  const changed = JSON.stringify(cropParams) !== JSON.stringify(CROP_DEFAULTS);
+  $('cropBadge').classList.toggle('show', changed);
+}
+$('p_cropt').addEventListener('input', e => {
+  cropParams.cropt = parseInt(e.target.value, 10);
+  $('v_cropt').textContent = cropParams.cropt; markCropChanged();
+});
+$('p_cropp').addEventListener('input', e => {
+  cropParams.cropp = parseInt(e.target.value, 10);
+  $('v_cropp').textContent = cropParams.cropp; markCropChanged();
+});
+
+$('previewCropBtn').addEventListener('click', previewCrop);
+$('cropClose').addEventListener('click', () => $('cropModal').classList.remove('show'));
+$('cropModal').addEventListener('click', e => { if (e.target.id === 'cropModal') $('cropModal').classList.remove('show'); });
+
+async function previewCrop() {
+  if (!currentFile) return;
+  $('previewCropBtn').disabled = true;
+  setStatus('计算裁剪区域…', 'busy');
+  try {
+    const fd = new FormData();
+    fd.append('file', currentFile);
+    const r = await fetch(
+      `/preprocess?threshold=${cropParams.cropt}&padding=${cropParams.cropp}`,
+      { method: 'POST', body: fd },
+    );
+    if (!r.ok) throw new Error(`HTTP ${r.status}: ${(await r.text()).slice(0, 200)}`);
+    const data = await r.json();
+    // Overlay crop frame on the main viewer (image-space coords).
+    view.crop = data.crop;
+    drawCropOverlay();
+    // Open the side-by-side preview modal.
+    showCropModal(data);
+    if (data.crop) {
+      setStatus(`裁剪预览 · ${data.width}×${data.height} → ${data.cropped_width}×${data.cropped_height} · 减少 ${(data.removed_ratio * 100).toFixed(1)}%`, 'ok');
+    } else {
+      setStatus('图像无空白可裁剪（内容已占满整图）', 'ok');
+    }
+  } catch (err) {
+    setStatus('裁剪失败: ' + err.message, 'error'); console.error(err);
+  } finally {
+    $('previewCropBtn').disabled = false;
+  }
+}
+
+function showCropModal(data) {
+  const stats = $('cropStats');
+  if (!data.crop) {
+    stats.innerHTML = `<span>原图 <b>${data.width}×${data.height}</b></span><span class="removed">无空白可裁剪</span>`;
+    $('cropBody').innerHTML = `<div class="col"><div class="cap">原图（未裁剪）</div><img src="${currentObjectUrl}" alt=""></div>`;
+  } else {
+    const [x0, y0, x1, y1] = data.crop;
+    stats.innerHTML =
+      `<span>原图 <b>${data.width}×${data.height}</b></span>` +
+      `<span>裁剪框 <b>[${x0}, ${y0}, ${x1}, ${y1}]</b></span>` +
+      `<span>裁后 <b>${data.cropped_width}×${data.cropped_height}</b></span>` +
+      `<span class="removed">减少像素 ${(data.removed_ratio * 100).toFixed(1)}%</span>`;
+    $('cropBody').innerHTML =
+      `<div class="col"><div class="cap">原图 (红色框 = 裁剪区域)</div>` +
+      `<img src="${currentObjectUrl}" alt="" id="cropOrig"></div>` +
+      `<div class="col"><div class="cap">裁剪后</div>` +
+      `<img src="data:image/png;base64,${data.cropped_image_b64}" alt=""></div>`;
+    // Draw the amber frame on the original-image copy in the modal.
+    requestAnimationFrame(() => {
+      const im = $('cropOrig');
+      im.onload = () => drawModalFrame(im, data);
+      if (im.complete) drawModalFrame(im, data);
+    });
+  }
+  $('cropModal').classList.add('show');
+}
+
+// Wrap the modal's original image so we can overlay an SVG crop frame on it.
+function drawModalFrame(im, data) {
+  const W = im.naturalWidth, H = im.naturalHeight;
+  const [x0, y0, x1, y1] = data.crop;
+  const dispW = im.clientWidth || im.naturalWidth;
+  const dispH = im.clientHeight || im.naturalHeight;
+  const sx = dispW / W, sy = dispH / H;
+  // Wrap if not already wrapped.
+  let wrap = im.parentElement.querySelector('.crop-wrap');
+  if (!wrap) {
+    wrap = document.createElement('div');
+    wrap.className = 'crop-wrap';
+    wrap.style.position = 'relative';
+    wrap.style.display = 'inline-block';
+    wrap.style.lineHeight = '0';
+    im.style.position = 'relative';
+    im.parentNode.insertBefore(wrap, im);
+    wrap.appendChild(im);
+    const ov = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    ov.setAttribute('class', 'crop-overlay');
+    ov.style.position = 'absolute';
+    ov.style.top = '0'; ov.style.left = '0';
+    ov.style.width = '100%'; ov.style.height = '100%';
+    ov.style.pointerEvents = 'none';
+    ov.setAttribute('viewBox', `0 0 ${dispW} ${dispH}`);
+    wrap.appendChild(ov);
+  }
+  const ov = wrap.querySelector('svg.crop-overlay');
+  ov.innerHTML = '';
+  const ns = 'http://www.w3.org/2000/svg';
+  // Darken outside.
+  [[0,0,dispW,y0*sy],[0,y1*sy,dispW,dispH-y1*sy],[0,y0*sy,x0*sx,(y1-y0)*sy],[x1*sx,y0*sy,dispW-x1*sx,(y1-y0)*sy]]
+    .forEach(([mx,my,mw,mh]) => {
+      if (mw<=0||mh<=0) return;
+      const r = document.createElementNS(ns,'rect');
+      r.setAttribute('x',mx);r.setAttribute('y',my);r.setAttribute('width',mw);r.setAttribute('height',mh);
+      r.setAttribute('fill','rgba(0,0,0,.5)'); ov.appendChild(r);
+    });
+  // Amber frame.
+  const fr = document.createElementNS(ns,'rect');
+  fr.setAttribute('x',x0*sx);fr.setAttribute('y',y0*sy);
+  fr.setAttribute('width',(x1-x0)*sx);fr.setAttribute('height',(y1-y0)*sy);
+  fr.setAttribute('fill','none');fr.setAttribute('stroke','#f59e0b');
+  fr.setAttribute('stroke-width','3');fr.setAttribute('stroke-dasharray','10 5');
+  ov.appendChild(fr);
+}
+
+// =========================================================================
+// upload + recognize flow
+// =========================================================================
+let currentFile = null;
+let currentObjectUrl = null;
 const dz = $('dropzone'), fileInput = $('fileInput');
 dz.addEventListener('click', () => fileInput.click());
-['dragenter','dragover'].forEach(e => dz.addEventListener(e, ev => { ev.preventDefault(); dz.classList.add('over'); }));
-['dragleave','drop'].forEach(e => dz.addEventListener(e, ev => { ev.preventDefault(); dz.classList.remove('over'); }));
-dz.addEventListener('drop', ev => { if (ev.dataTransfer.files[0]) handleFile(ev.dataTransfer.files[0]); });
-fileInput.addEventListener('change', () => { if (fileInput.files[0]) handleFile(fileInput.files[0]); });
+['dragenter','dragover'].forEach(e=>dz.addEventListener(e,ev=>{ev.preventDefault();dz.classList.add('over');}));
+['dragleave','drop'].forEach(e=>dz.addEventListener(e,ev=>{ev.preventDefault();dz.classList.remove('over');}));
+dz.addEventListener('drop', ev=>{ if(ev.dataTransfer.files[0]) handleFile(ev.dataTransfer.files[0]); });
+fileInput.addEventListener('change', ()=>{ if(fileInput.files[0]) handleFile(fileInput.files[0]); });
 
-async function handleFile(file) {
-  if (!file.type.startsWith('image/')) { setStatus('只支持图片文件', 'error'); return; }
-  setStatus(`上传中 (${(file.size/1024).toFixed(0)} KB)…`, 'busy');
-  const fd = new FormData(); fd.append('file', file);
+function handleFile(file) {
+  if (!file.type.startsWith('image/')) { setStatus('只支持图片文件','error'); return; }
+  currentFile = file;
+  if (currentObjectUrl) URL.revokeObjectURL(currentObjectUrl);
+  currentObjectUrl = URL.createObjectURL(file);
+  $('filename').textContent = '📎 ' + file.name + ` (${(file.size/1024).toFixed(0)} KB)`;
+  // Show image immediately, NO recognition yet.
+  view.items = []; view.crop = null; drawPolygons();
+  showImage(currentObjectUrl);
+  // enable recognize button, reset results
+  $('recognizeBtn').disabled = false;
+  $('previewCropBtn').disabled = false;
+  $('clearBtn').disabled = false;
+  $('count').textContent = '';
+  $('itemsPlaceholder').textContent = '点击「识别」开始';
+  $('jsonOut').textContent = '';
+  $('meta').textContent = '';
+  setStatus('图片已加载，点击「识别」','');
+}
+
+$('recognizeBtn').addEventListener('click', recognize);
+$('clearBtn').addEventListener('click', clearAll);
+
+function clearAll() {
+  currentFile = null;
+  if (currentObjectUrl) { URL.revokeObjectURL(currentObjectUrl); currentObjectUrl = null; }
+  view.items = []; view.crop = null; drawPolygons();
+  $('emptyHint').style.display = 'flex';
+  canvas.style.display = 'none';
+  $('hud').style.display = 'none'; $('hint').style.display = 'none';
+  $('filename').textContent = '';
+  $('recognizeBtn').disabled = true;
+  $('previewCropBtn').disabled = true;
+  $('clearBtn').disabled = true;
+  $('count').textContent = '';
+  $('itemsPlaceholder').textContent = '上传图片后点击「识别」';
+  $('jsonOut').textContent = ''; $('meta').textContent = '';
+  $('cropModal').classList.remove('show');
+  setStatus('','');
+}
+
+async function recognize() {
+  if (!currentFile) return;
+  const opt = buildOptions();
+  const fd = new FormData();
+  fd.append('file', currentFile);
+  if (Object.keys(opt).length) fd.append('options', JSON.stringify(opt));
+
+  $('recognizeBtn').disabled = true;
+  setStatus('识别中…','busy');
   try {
-    let resp = await fetch('/analyze', { method: 'POST', body: fd });
+    let resp = await fetch('/analyze', { method:'POST', body: fd });
     let data;
     if (resp.status === 202) {
       data = await resp.json();
       const tid = data.task_id;
       if (!tid) throw new Error('大图任务未返回 task_id');
-      setStatus(`大图异步处理中 (task ${tid.slice(0,8)}…)`, 'busy');
+      setStatus(`大图异步处理中 (${tid.slice(0,8)}…)`, 'busy');
       data = await pollTask(tid);
     } else if (!resp.ok) {
       const t = await resp.text(); throw new Error(`HTTP ${resp.status}: ${t.slice(0,200)}`);
     } else {
       data = await resp.json();
     }
-    // ALWAYS show the original image (we draw polygons as crisp SVG overlays).
-    // Discard server-side annotated_image so zoom stays sharp.
-    showImage(URL.createObjectURL(file), data.items);
-    renderList(data);
-    setStatus(`完成 · ${data.items.length} 项 · ${data.image_meta.tile_count} tile`, '');
+    render(data);
+    setStatus(`完成 · ${data.items.length} 项 · ${data.image_meta.tile_count} tile`, 'ok');
   } catch (err) {
-    setStatus('错误: ' + err.message, 'error'); console.error(err);
+    setStatus('错误: '+err.message, 'error'); console.error(err);
+  } finally {
+    $('recognizeBtn').disabled = false;
   }
 }
 
 async function pollTask(taskId) {
   let delay = 1500;
-  for (let i = 0; i < 200; i++) {
-    await new Promise(r => setTimeout(r, delay));
+  for (let i=0; i<200; i++) {
+    await new Promise(r=>setTimeout(r, delay));
     const r = await fetch(`/tasks/${taskId}`);
     if (!r.ok) throw new Error(`轮询失败 HTTP ${r.status}`);
     const t = await r.json();
-    if (t.status === 'done') return t.result;
-    if (t.status === 'error') throw new Error(t.error || '处理失败');
-    delay = Math.min(delay * 1.3, 6000);
+    if (t.status==='done') return t.result;
+    if (t.status==='error') throw new Error(t.error||'处理失败');
+    delay = Math.min(delay*1.3, 6000);
   }
   throw new Error('处理超时');
 }
 
-function renderList(data) {
+function render(data) {
+  view.items = data.items; drawPolygons();
   $('meta').textContent = `${data.image_meta.width}×${data.image_meta.height} · ${data.image_meta.tile_count} tile`;
   $('count').textContent = `(${data.items.length})`;
-  const pane = $('pane-items');
-  pane.innerHTML = '';
+  const pane = $('pane-items'); pane.innerHTML = '';
   if (data.items.length === 0) {
     pane.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:14px">没有检测到内容</div>';
   }
   data.items.forEach((it, idx) => {
-    const cls = it.type === 'art_text' ? 'art' : it.type === 'qr' ? 'qr' : it.type === 'barcode' ? 'barcode' : '';
+    const cls = it.type==='art_text'?'art':it.type==='qr'?'qr':it.type==='barcode'?'barcode':'';
     const label = it.text || it.content || '(空)';
+    const gran = it.granularity ? `<span class="gran">${it.granularity}</span>` : '';
     const div = document.createElement('div');
     div.className = 'item'; div.dataset.idx = idx;
     div.innerHTML = `
       <div class="row1">
-        <span class="tag ${cls}">${typeLabel(it.type)}</span>
+        <span class="tag ${cls}">${typeLabel(it.type)}</span>${gran}
         <span class="conf">${(it.confidence*100).toFixed(0)}%</span>
       </div>
       <div class="text">${escapeHtml(label)}</div>
       <div class="src">${it.source} · ${it.id}</div>`;
-    div.addEventListener('mouseenter', () => { view.activeIdx = idx; drawPolygons(); });
-    div.addEventListener('mouseleave', () => { if (view.activeIdx === idx && !$(`.item.active`)) { view.activeIdx = -1; drawPolygons(); } });
-    div.addEventListener('click', () => setActive(idx));
+    div.addEventListener('mouseenter', ()=>{view.activeIdx=idx;drawPolygons();});
+    div.addEventListener('mouseleave', ()=>{view.activeIdx=-1;drawPolygons();});
     pane.appendChild(div);
   });
   $('jsonOut').textContent = JSON.stringify(data, null, 2);
 }
+function typeLabel(t){return {text:'文字',art_text:'艺术字',qr:'二维码',barcode:'条码'}[t]||t;}
+function escapeHtml(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function setStatus(msg,kind){const s=$('status');s.textContent=msg;s.className='status'+(kind?' '+kind:'');}
 
-function typeLabel(t) { return { text:'文字', art_text:'艺术字', qr:'二维码', barcode:'条码' }[t] || t; }
-function escapeHtml(s) { return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
-function setStatus(msg, kind) { const s = $('status'); s.textContent = msg; s.className = 'status' + (kind ? ' '+kind : ''); }
-
-// tabs
-document.querySelectorAll('.tab').forEach(t => {
-  t.addEventListener('click', () => {
-    document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+document.querySelectorAll('.tab').forEach(t=>{
+  t.addEventListener('click',()=>{
+    document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
     t.classList.add('active');
-    document.querySelectorAll('.pane').forEach(p => p.classList.remove('active'));
-    $('pane-' + t.dataset.tab).classList.add('active');
+    document.querySelectorAll('.pane').forEach(p=>p.classList.remove('active'));
+    $('pane-'+t.dataset.tab).classList.add('active');
   });
 });
 
-// redraw when label toggle changes
-$('showLabels').addEventListener('change', drawPolygons);
+// init
+syncParamUI();
+syncCropUI();
 </script>
 </body>
 </html>
