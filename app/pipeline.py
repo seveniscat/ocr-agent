@@ -1,0 +1,216 @@
+"""Pipeline orchestration.
+
+Flow:
+    load image → plan grid → for each tile:
+        detect text (polygon) → recognize → collect items
+        detect qr/barcode → collect items
+    (after tiles) low-confidence text → VLM fallback
+    → map to global coords → dedupe (NMS) → annotate (optional) → return
+
+The pipeline is a thin coordinator: each stage lives in its own module so it
+can be swapped or unit-tested independently.
+"""
+from __future__ import annotations
+
+import base64
+import logging
+
+from .config import Settings
+from .schemas import AnalyzeResponse, ImageMeta, Item
+from .tiling import (
+    GridSpec,
+    crop_tile,
+    dedupe_items,
+    load_image,
+    offset_polygon,
+    plan_grid,
+    polygon_to_bbox,
+    renumber,
+    tile_specs,
+)
+
+logger = logging.getLogger(__name__)
+
+
+class Pipeline:
+    """Stateful coordinator holding lazily-loaded model handles."""
+
+    def __init__(self, settings: Settings) -> None:
+        self.settings = settings
+        # Lazy: these load heavy models on first use.
+        self._ocr = None
+        self._codes = None
+        self._codes_unavailable = False  # set True once we know the lib is missing
+        self._vlm = None
+
+    # -- lazy loaders -------------------------------------------------------
+
+    def _get_ocr(self):
+        if self._ocr is None:
+            from .ocr.detector import OCREngine
+
+            self._ocr = OCREngine(self.settings)
+        return self._ocr
+
+    def _get_codes(self):
+        if self._codes is None:
+            from .codes.qrcode import CodeEngine
+
+            self._codes = CodeEngine()
+        return self._codes
+
+    def _get_codes_or_none(self):
+        """Return the code engine, or None if the zbar lib is unavailable.
+
+        The first failure probes the lib once and remembers the result so we
+        don't spam the log per request. Code detection is a *secondary* channel
+        — its absence must never break the primary OCR flow.
+        """
+        if self._codes_unavailable:
+            return None
+        engine = self._get_codes()
+        if engine.available():
+            return engine
+        logger.warning(
+            "Code engine unavailable (zbar lib missing); QR/barcode channel "
+            "disabled. Fix: brew install zbar (macOS) / apt-get install libzbar0."
+        )
+        self._codes_unavailable = True
+        return None
+
+    def _get_vlm(self):
+        if self._vlm is None:
+            from .vlm.base import build_vlm
+
+            self._vlm = build_vlm(self.settings)
+        return self._vlm
+
+    # -- main entry ---------------------------------------------------------
+
+    def run(self, image_data: bytes, annotate: bool = False) -> AnalyzeResponse:
+        img = load_image(image_data)
+        h, w = img.shape[:2]
+
+        grid = plan_grid(
+            w, h,
+            target_size=self.settings.tile_target_size,
+            overlap=self.settings.tile_overlap,
+        )
+        specs = tile_specs(grid)
+
+        all_items: list[Item] = []
+
+        ocr = self._get_ocr()
+        codes = self._get_codes_or_none()  # may be None (lib missing) → skip
+
+        # Per-tile processing.
+        for spec in specs:
+            tile = crop_tile(img, spec)
+
+            # --- text (primary channel; errors here are fatal) ---
+            for det in ocr.detect_and_recognize(tile):
+                global_poly = offset_polygon(det.polygon, spec.x0, spec.y0)
+                all_items.append(
+                    Item(
+                        id="tmp",
+                        type="text",
+                        text=det.text,
+                        polygon=global_poly,
+                        bbox=polygon_to_bbox(global_poly),
+                        confidence=det.confidence,
+                        source="paddleocr",
+                        tile_index=spec.index,
+                    )
+                )
+
+            # --- qr / barcode (best-effort; missing lib just skips this tile) ---
+            if codes is not None:
+                try:
+                    for det in codes.detect(tile):
+                        global_poly = offset_polygon(
+                            det.polygon, spec.x0, spec.y0
+                        )
+                        all_items.append(
+                            Item(
+                                id="tmp",
+                                type=det.type,  # "qr" | "barcode"
+                                content=det.content,
+                                polygon=global_poly,
+                                bbox=polygon_to_bbox(global_poly),
+                                confidence=det.confidence,
+                                source="pyzbar",
+                                tile_index=spec.index,
+                            )
+                        )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "Code detection failed on tile %d, skipping: %s",
+                        spec.index, exc,
+                    )
+
+        # --- VLM fallback for low-confidence / suspicious text ---
+        all_items = self._maybe_vlm_fallback(img, all_items)
+
+        # --- merge duplicates across tile seams ---
+        all_items = dedupe_items(all_items)
+        all_items = renumber(all_items, prefix="t")
+
+        response = AnalyzeResponse(
+            image_meta=ImageMeta(width=w, height=h, tile_count=grid.count),
+            items=all_items,
+        )
+
+        if annotate:
+            from .viz.annotator import annotate_image
+
+            annotated = annotate_image(img, all_items, self.settings)
+            response.annotated_image_b64 = _b64_png(annotated)
+
+        return response
+
+    # -- helpers ------------------------------------------------------------
+
+    def _maybe_vlm_fallback(
+        self, img, items: list[Item]
+    ) -> list[Item]:
+        """For text items below the confidence threshold, re-recognize the
+        crop via the VLM. Keeps the original polygon (geometry stays from the
+        expert detector — VLM only supplies the text)."""
+        if not self.settings.vlm_enabled:
+            return items
+        try:
+            vlm = self._get_vlm()
+        except Exception as exc:  # noqa: BLE001 — VLM is best-effort
+            logger.warning("VLM unavailable, skipping fallback: %s", exc)
+            return items
+
+        threshold = self.settings.rec_confidence_fallback
+        out: list[Item] = []
+        for item in items:
+            if (
+                item.type == "text"
+                and item.source == "paddleocr"
+                and item.confidence < threshold
+            ):
+                try:
+                    new_text, new_conf = vlm.recognize_crop(img, item.polygon)
+                    if new_text:
+                        item = item.model_copy(
+                            update={
+                                "text": new_text,
+                                "confidence": max(item.confidence, new_conf),
+                                "type": "art_text",
+                                "source": "vlm_fallback",
+                            }
+                        )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("VLM fallback failed for one item: %s", exc)
+            out.append(item)
+        return out
+
+
+def _b64_png(pil_img) -> str:
+    import io
+    buf = io.BytesIO()
+    pil_img.save(buf, format="PNG")
+    return base64.b64encode(buf.getvalue()).decode("ascii")

@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ocr-agent · 图片理解</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #181b22; --panel-2: #20242e;
+    --border: #2c313c; --text: #e6e9ef; --muted: #8b93a7;
+    --accent: #4f8cff; --accent-2: #22c55e; --warn: #f59e0b; --err: #ef4444;
+    --text-color: #4ade80; --art: #fb923c; --qr: #60a5fa; --barcode: #c084fc;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: -apple-system, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+    background: var(--bg); color: var(--text); height: 100vh;
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  header {
+    padding: 12px 20px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 14px; background: var(--panel);
+  }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; }
+  header .sub { color: var(--muted); font-size: 12px; }
+  header .spacer { flex: 1; }
+  header a { color: var(--accent); font-size: 12px; text-decoration: none; }
+  header code { color: var(--muted); font-size: 11px; }
+
+  .main { flex: 1; display: grid; grid-template-columns: 1fr 420px; min-height: 0; }
+
+  /* ---- left: pan-zoom viewer ---- */
+  .viewer {
+    position: relative; background:
+      repeating-conic-gradient(#1a1d25 0% 25%, #14161c 0% 50%) 50% / 24px 24px;
+    overflow: hidden; cursor: grab;
+  }
+  .viewer.grabbing { cursor: grabbing; }
+  .viewer .empty {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    color: var(--muted); text-align: center; padding: 40px; font-size: 13px; pointer-events: none;
+  }
+  /* The canvas: a transformed container. translate3d + scale for GPU. */
+  .canvas {
+    position: absolute; top: 0; left: 0;
+    transform-origin: 0 0; will-change: transform; line-height: 0;
+  }
+  .canvas img { display: block; user-select: none; -webkit-user-drag: none; }
+  .canvas svg {
+    position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+    pointer-events: none; overflow: visible;
+  }
+  .canvas svg polygon {
+    fill: transparent; stroke: var(--text-color); stroke-width: 1.5;
+    transition: stroke-width .1s, fill .1s;
+  }
+  .canvas svg polygon.art { stroke: var(--art); }
+  .canvas svg polygon.qr { stroke: var(--qr); }
+  .canvas svg polygon.barcode { stroke: var(--barcode); }
+  /* stroke-width must be divided by zoom to stay constant in screen px */
+  .canvas svg polygon.hl {
+    fill: rgba(255,255,255,.18);
+    filter: drop-shadow(0 0 4px currentColor);
+  }
+  .canvas svg text.label {
+    fill: var(--bg); paint-order: stroke; stroke: var(--text-color);
+    stroke-width: 3px; font-size: 13px; font-weight: 600;
+  }
+
+  /* zoom HUD */
+  .hud {
+    position: absolute; bottom: 12px; left: 12px; display: flex; gap: 6px;
+    background: rgba(0,0,0,.6); border-radius: 6px; padding: 4px;
+    backdrop-filter: blur(8px); user-select: none;
+  }
+  .hud button {
+    background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 4px; padding: 4px 9px; cursor: pointer; font-size: 12px; line-height: 1;
+  }
+  .hud button:hover { border-color: var(--accent); }
+  .hud .zoom-val { color: var(--muted); font-size: 12px; padding: 4px 8px; min-width: 48px; text-align: center; }
+  .hint {
+    position: absolute; top: 12px; left: 12px; color: var(--muted); font-size: 11px;
+    background: rgba(0,0,0,.5); padding: 5px 9px; border-radius: 5px;
+    backdrop-filter: blur(8px); pointer-events: none;
+  }
+
+  /* ---- right: panel ---- */
+  .panel { background: var(--panel); border-left: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0; }
+  .upload {
+    padding: 14px; border-bottom: 1px solid var(--border);
+    display: flex; flex-direction: column; gap: 10px;
+  }
+  .dropzone {
+    border: 1.5px dashed var(--border); border-radius: 8px; padding: 18px;
+    text-align: center; cursor: pointer; transition: all .15s; font-size: 12px;
+    color: var(--muted);
+  }
+  .dropzone:hover, .dropzone.over { border-color: var(--accent); color: var(--text); background: var(--panel-2); }
+  .dropzone strong { color: var(--text); display: block; margin-bottom: 4px; font-size: 13px; }
+  .opts { display: flex; gap: 12px; align-items: center; font-size: 12px; color: var(--muted); flex-wrap: wrap; }
+  .opts label { display: flex; align-items: center; gap: 5px; cursor: pointer; }
+  .status { font-size: 12px; color: var(--muted); min-height: 18px; }
+  .status.busy { color: var(--warn); }
+  .status.error { color: var(--err); }
+
+  .tabs { display: flex; border-bottom: 1px solid var(--border); }
+  .tab {
+    padding: 9px 14px; font-size: 12px; cursor: pointer; color: var(--muted);
+    border-bottom: 2px solid transparent;
+  }
+  .tab.active { color: var(--text); border-bottom-color: var(--accent); }
+
+  .tabbody { flex: 1; overflow: auto; min-height: 0; }
+  .pane { display: none; padding: 10px; }
+  .pane.active { display: block; }
+
+  .item {
+    padding: 9px 10px; border-radius: 6px; margin-bottom: 6px; cursor: pointer;
+    border: 1px solid var(--border); background: var(--panel-2); font-size: 12px;
+    transition: border-color .1s;
+  }
+  .item:hover { border-color: var(--accent); }
+  .item.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+  .item .row1 { display: flex; align-items: center; gap: 8px; margin-bottom: 3px; }
+  .tag {
+    font-size: 10px; padding: 1px 6px; border-radius: 3px; font-weight: 600;
+    background: var(--text-color); color: var(--bg);
+  }
+  .tag.art { background: var(--art); } .tag.qr { background: var(--qr); }
+  .tag.barcode { background: var(--barcode); }
+  .item .conf { color: var(--muted); font-size: 11px; margin-left: auto; }
+  .item .text { color: var(--text); word-break: break-all; }
+  .item .src { color: var(--muted); font-size: 10px; margin-top: 2px; }
+
+  pre.json {
+    margin: 0; padding: 10px; font-size: 11px; line-height: 1.5;
+    font-family: "SF Mono", Menlo, Consolas, monospace; color: var(--text);
+    white-space: pre-wrap; word-break: break-all;
+  }
+
+  .legend { display: flex; gap: 12px; padding: 6px 14px; font-size: 11px; color: var(--muted); border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+  .legend span { display: flex; align-items: center; gap: 4px; }
+  .legend i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+</style>
+</head>
+<body>
+<header>
+  <h1>ocr-agent</h1>
+  <span class="sub">包装刀模图 OCR · polygon bbox</span>
+  <span class="spacer"></span>
+  <code id="meta"></code>
+  <a href="/docs" target="_blank">API docs ↗</a>
+</header>
+
+<div class="main">
+  <!-- LEFT: pan-zoom viewer -->
+  <div class="viewer" id="viewer">
+    <div class="empty" id="emptyHint">
+      上传一张包装图开始<br><br>支持 100–10000px · 自动切片 · 文字/二维码/艺术字
+    </div>
+    <div class="hint" id="hint" style="display:none">滚轮缩放 · 拖拽平移 · 双击复位</div>
+    <div class="canvas" id="canvas" style="display:none">
+      <img id="img" alt="">
+      <svg id="svg" xmlns="http://www.w3.org/2000/svg"></svg>
+    </div>
+    <div class="hud" id="hud" style="display:none">
+      <button id="zoomOut" title="缩小">−</button>
+      <span class="zoom-val" id="zoomVal">100%</span>
+      <button id="zoomIn" title="放大">+</button>
+      <button id="reset" title="复位">⟲</button>
+      <button id="fit" title="适应窗口">⊡</button>
+    </div>
+  </div>
+
+  <!-- RIGHT: panel -->
+  <div class="panel">
+    <div class="upload">
+      <div class="dropzone" id="dropzone">
+        <strong>拖拽图片到这里，或点击选择</strong>
+        <span>PNG / JPG / WEBP · 高分辨率自动异步处理</span>
+        <input type="file" id="fileInput" accept="image/*" hidden>
+      </div>
+      <div class="opts">
+        <label><input type="checkbox" id="showLabels"> 显示文字标签</label>
+        <label><input type="checkbox" id="fitOnLoad" checked> 载入适应窗口</label>
+      </div>
+      <div class="status" id="status"></div>
+    </div>
+
+    <div class="legend">
+      <span><i style="background:var(--text-color)"></i>文字</span>
+      <span><i style="background:var(--art)"></i>艺术字</span>
+      <span><i style="background:var(--qr)"></i>二维码</span>
+      <span><i style="background:var(--barcode)"></i>条码</span>
+    </div>
+
+    <div class="tabs">
+      <div class="tab active" data-tab="items">识别结果 <span id="count"></span></div>
+      <div class="tab" data-tab="json">JSON</div>
+    </div>
+
+    <div class="tabbody">
+      <div class="pane active" id="pane-items"></div>
+      <div class="pane" id="pane-json"><pre class="json" id="jsonOut"></pre></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+
+// ---- pan-zoom state ----
+const view = {
+  // image natural size
+  iw: 0, ih: 0,
+  // current transform
+  scale: 1, tx: 0, ty: 0,
+  // fit scale (to recompute on resize)
+  fitScale: 1,
+  minScale: 0.05, maxScale: 40,
+  items: [],
+  activeIdx: -1,
+};
+
+const viewer = $('viewer'), canvas = $('canvas'), img = $('img'), svg = $('svg');
+
+// =========================================================================
+// Image load + render
+// =========================================================================
+function showImage(srcUrl, items) {
+  view.items = items || [];
+  $('emptyHint').style.display = 'none';
+  canvas.style.display = 'block';
+  $('hud').style.display = 'flex';
+  $('hint').style.display = 'block';
+  img.onload = () => {
+    view.iw = img.naturalWidth; view.ih = img.naturalHeight;
+    svg.setAttribute('viewBox', `0 0 ${view.iw} ${view.ih}`);
+    svg.setAttribute('width', view.iw); svg.setAttribute('height', view.ih);
+    drawPolygons();
+    if ($('fitOnLoad').checked) fit(); else { setTransform(); updateZoomVal(); }
+  };
+  img.src = srcUrl;
+}
+
+function drawPolygons() {
+  svg.innerHTML = '';
+  const showLabels = $('showLabels').checked;
+  view.items.forEach((it, idx) => {
+    if (!it.polygon || it.polygon.length < 3) return;
+    const cls = it.type === 'art_text' ? 'art' : it.type === 'qr' ? 'qr' : it.type === 'barcode' ? 'barcode' : '';
+    const poly = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+    poly.setAttribute('points', it.polygon.map(p => p[0].toFixed(1)+','+p[1].toFixed(1)).join(' '));
+    poly.setAttribute('class', cls + (idx === view.activeIdx ? ' hl' : ''));
+    poly.dataset.idx = idx;
+    svg.appendChild(poly);
+    if (showLabels) {
+      const xs = it.polygon.map(p=>p[0]), ys = it.polygon.map(p=>p[1]);
+      const t = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      t.setAttribute('x', Math.min(...xs));
+      t.setAttribute('y', Math.min(...ys) - 3);
+      t.setAttribute('class', 'label');
+      t.textContent = (it.text || it.content || '').slice(0, 30);
+      svg.appendChild(t);
+    }
+  });
+  // keep stroke visually constant regardless of zoom
+  svg.querySelectorAll('polygon').forEach(p => {
+    p.style.strokeWidth = (1.5 / view.scale).toFixed(3);
+    if (p.classList.contains('hl')) p.style.strokeWidth = (3 / view.scale).toFixed(3);
+  });
+}
+
+// =========================================================================
+// Transform (pan-zoom core)
+// =========================================================================
+function setTransform() {
+  canvas.style.transform = `translate3d(${view.tx}px, ${view.ty}px, 0) scale(${view.scale})`;
+}
+function updateZoomVal() { $('zoomVal').textContent = Math.round(view.scale * 100) + '%'; }
+
+function clampScale(s) { return Math.max(view.minScale, Math.min(view.maxScale, s)); }
+
+function fit() {
+  const r = viewer.getBoundingClientRect();
+  const pad = 24;
+  const sx = (r.width - pad) / view.iw, sy = (r.height - pad) / view.ih;
+  view.fitScale = clampScale(Math.min(sx, sy));
+  view.scale = view.fitScale;
+  // center
+  view.tx = (r.width - view.iw * view.scale) / 2;
+  view.ty = (r.height - view.ih * view.scale) / 2;
+  setTransform(); updateZoomVal(); drawPolygons();
+}
+
+// Zoom around a focal point (clientX/clientY relative to viewer).
+function zoomAt(clientX, clientY, factor) {
+  const r = viewer.getBoundingClientRect();
+  const px = clientX - r.left, py = clientY - r.top;
+  // image coords under cursor before
+  const ix = (px - view.tx) / view.scale;
+  const iy = (py - view.ty) / view.scale;
+  const newScale = clampScale(view.scale * factor);
+  if (newScale === view.scale) return;
+  view.scale = newScale;
+  // keep the same image point under cursor
+  view.tx = px - ix * view.scale;
+  view.ty = py - iy * view.scale;
+  setTransform(); updateZoomVal(); drawPolygons();
+}
+
+// =========================================================================
+// Mouse / wheel / touch input
+// =========================================================================
+viewer.addEventListener('wheel', e => {
+  if (!view.iw) return;
+  e.preventDefault();
+  // Smooth zoom: pinch on trackpad also fires wheel with ctrlKey.
+  const factor = e.deltaY < 0 ? 1.12 : 1/1.12;
+  zoomAt(e.clientX, e.clientY, factor);
+}, { passive: false });
+
+// drag to pan
+let dragging = false, lastX = 0, lastY = 0;
+viewer.addEventListener('mousedown', e => {
+  if (e.button !== 0) return;
+  dragging = true; lastX = e.clientX; lastY = e.clientY;
+  viewer.classList.add('grabbing');
+});
+window.addEventListener('mousemove', e => {
+  if (!dragging) return;
+  view.tx += e.clientX - lastX; view.ty += e.clientY - lastY;
+  lastX = e.clientX; lastY = e.clientY;
+  setTransform();
+});
+window.addEventListener('mouseup', () => { dragging = false; viewer.classList.remove('grabbing'); });
+
+// double click → reset to fit
+viewer.addEventListener('dblclick', () => { if (view.iw) fit(); });
+
+// touch: one finger pan, two finger pinch
+let pinchStart = null;
+viewer.addEventListener('touchstart', e => {
+  if (e.touches.length === 2) {
+    const [a, b] = e.touches;
+    pinchStart = { d: dist(a, b), scale: view.scale,
+      cx: (a.clientX + b.clientX)/2, cy: (a.clientY + b.clientY)/2 };
+  } else if (e.touches.length === 1) {
+    dragging = true; lastX = e.touches[0].clientX; lastY = e.touches[0].clientY;
+  }
+}, { passive: true });
+viewer.addEventListener('touchmove', e => {
+  if (e.touches.length === 2 && pinchStart) {
+    e.preventDefault();
+    const [a, b] = e.touches;
+    const d = dist(a, b);
+    const factor = d / pinchStart.d;
+    const newScale = clampScale(pinchStart.scale * factor);
+    const r = viewer.getBoundingClientRect();
+    zoomAt(pinchStart.cx, pinchStart.cy, newScale / view.scale);
+  } else if (e.touches.length === 1 && dragging) {
+    e.preventDefault();
+    view.tx += e.touches[0].clientX - lastX; view.ty += e.touches[0].clientY - lastY;
+    lastX = e.touches[0].clientX; lastY = e.touches[0].clientY;
+    setTransform();
+  }
+}, { passive: false });
+viewer.addEventListener('touchend', e => { if (e.touches.length === 0) dragging = false; if (e.touches.length < 2) pinchStart = null; });
+function dist(a, b) { return Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY); }
+
+// HUD buttons
+$('zoomIn').onclick = () => { const r = viewer.getBoundingClientRect(); zoomAt(r.left + r.width/2, r.top + r.height/2, 1.25); };
+$('zoomOut').onclick = () => { const r = viewer.getBoundingClientRect(); zoomAt(r.left + r.width/2, r.top + r.height/2, 1/1.25); };
+$('reset').onclick = fit;
+$('fit').onclick = fit;
+
+window.addEventListener('resize', () => { /* keep current view; user can hit fit */ });
+
+// =========================================================================
+// Item ↔ polygon interaction
+// =========================================================================
+function setActive(idx) {
+  if (view.activeIdx === idx) { view.activeIdx = -1; }
+  else view.activeIdx = idx;
+  drawPolygons();
+  document.querySelectorAll('.item').forEach(el => el.classList.toggle('active', parseInt(el.dataset.idx) === view.activeIdx));
+  // bring active polygon into view
+  if (view.activeIdx >= 0) panTo(view.items[view.activeIdx]);
+}
+
+// pan viewer so the given item's bbox is centered (no zoom change)
+function panTo(item) {
+  if (!item || !item.polygon) return;
+  const xs = item.polygon.map(p=>p[0]), ys = item.polygon.map(p=>p[1]);
+  const cx = (Math.min(...xs)+Math.max(...xs))/2, cy = (Math.min(...ys)+Math.max(...ys))/2;
+  const r = viewer.getBoundingClientRect();
+  view.tx = r.width/2 - cx * view.scale;
+  view.ty = r.height/2 - cy * view.scale;
+  setTransform();
+}
+
+// =========================================================================
+// Upload + API
+// =========================================================================
+const dz = $('dropzone'), fileInput = $('fileInput');
+dz.addEventListener('click', () => fileInput.click());
+['dragenter','dragover'].forEach(e => dz.addEventListener(e, ev => { ev.preventDefault(); dz.classList.add('over'); }));
+['dragleave','drop'].forEach(e => dz.addEventListener(e, ev => { ev.preventDefault(); dz.classList.remove('over'); }));
+dz.addEventListener('drop', ev => { if (ev.dataTransfer.files[0]) handleFile(ev.dataTransfer.files[0]); });
+fileInput.addEventListener('change', () => { if (fileInput.files[0]) handleFile(fileInput.files[0]); });
+
+async function handleFile(file) {
+  if (!file.type.startsWith('image/')) { setStatus('只支持图片文件', 'error'); return; }
+  setStatus(`上传中 (${(file.size/1024).toFixed(0)} KB)…`, 'busy');
+  const fd = new FormData(); fd.append('file', file);
+  try {
+    let resp = await fetch('/analyze', { method: 'POST', body: fd });
+    let data;
+    if (resp.status === 202) {
+      data = await resp.json();
+      const tid = data.task_id;
+      if (!tid) throw new Error('大图任务未返回 task_id');
+      setStatus(`大图异步处理中 (task ${tid.slice(0,8)}…)`, 'busy');
+      data = await pollTask(tid);
+    } else if (!resp.ok) {
+      const t = await resp.text(); throw new Error(`HTTP ${resp.status}: ${t.slice(0,200)}`);
+    } else {
+      data = await resp.json();
+    }
+    // ALWAYS show the original image (we draw polygons as crisp SVG overlays).
+    // Discard server-side annotated_image so zoom stays sharp.
+    showImage(URL.createObjectURL(file), data.items);
+    renderList(data);
+    setStatus(`完成 · ${data.items.length} 项 · ${data.image_meta.tile_count} tile`, '');
+  } catch (err) {
+    setStatus('错误: ' + err.message, 'error'); console.error(err);
+  }
+}
+
+async function pollTask(taskId) {
+  let delay = 1500;
+  for (let i = 0; i < 200; i++) {
+    await new Promise(r => setTimeout(r, delay));
+    const r = await fetch(`/tasks/${taskId}`);
+    if (!r.ok) throw new Error(`轮询失败 HTTP ${r.status}`);
+    const t = await r.json();
+    if (t.status === 'done') return t.result;
+    if (t.status === 'error') throw new Error(t.error || '处理失败');
+    delay = Math.min(delay * 1.3, 6000);
+  }
+  throw new Error('处理超时');
+}
+
+function renderList(data) {
+  $('meta').textContent = `${data.image_meta.width}×${data.image_meta.height} · ${data.image_meta.tile_count} tile`;
+  $('count').textContent = `(${data.items.length})`;
+  const pane = $('pane-items');
+  pane.innerHTML = '';
+  if (data.items.length === 0) {
+    pane.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:14px">没有检测到内容</div>';
+  }
+  data.items.forEach((it, idx) => {
+    const cls = it.type === 'art_text' ? 'art' : it.type === 'qr' ? 'qr' : it.type === 'barcode' ? 'barcode' : '';
+    const label = it.text || it.content || '(空)';
+    const div = document.createElement('div');
+    div.className = 'item'; div.dataset.idx = idx;
+    div.innerHTML = `
+      <div class="row1">
+        <span class="tag ${cls}">${typeLabel(it.type)}</span>
+        <span class="conf">${(it.confidence*100).toFixed(0)}%</span>
+      </div>
+      <div class="text">${escapeHtml(label)}</div>
+      <div class="src">${it.source} · ${it.id}</div>`;
+    div.addEventListener('mouseenter', () => { view.activeIdx = idx; drawPolygons(); });
+    div.addEventListener('mouseleave', () => { if (view.activeIdx === idx && !$(`.item.active`)) { view.activeIdx = -1; drawPolygons(); } });
+    div.addEventListener('click', () => setActive(idx));
+    pane.appendChild(div);
+  });
+  $('jsonOut').textContent = JSON.stringify(data, null, 2);
+}
+
+function typeLabel(t) { return { text:'文字', art_text:'艺术字', qr:'二维码', barcode:'条码' }[t] || t; }
+function escapeHtml(s) { return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function setStatus(msg, kind) { const s = $('status'); s.textContent = msg; s.className = 'status' + (kind ? ' '+kind : ''); }
+
+// tabs
+document.querySelectorAll('.tab').forEach(t => {
+  t.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+    t.classList.add('active');
+    document.querySelectorAll('.pane').forEach(p => p.classList.remove('active'));
+    $('pane-' + t.dataset.tab).classList.add('active');
+  });
+});
+
+// redraw when label toggle changes
+$('showLabels').addEventListener('change', drawPolygons);
+</script>
+</body>
+</html>

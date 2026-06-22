@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+build/
+dist/
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# Tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local secrets / env
+.env
+
+# OS
+.DS_Store
+Thumbs.db
+
+# PaddlePaddle model cache (downloaded at runtime to ~/.paddlex, but
+# in case it lands in-project, never commit it)
+.paddlex/
+*.pdmodel
+*.pdiparams*
+
+# Sample outputs (don't commit annotated images / result dumps)
+samples/*.png
+samples/*.jpg
+samples/*.jpeg
+samples/*.webp
+/tmp/
