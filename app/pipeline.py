@@ -85,6 +85,21 @@ class Pipeline:
             self._vlm = build_vlm(self.settings)
         return self._vlm
 
+    def refresh_settings(self, settings: "Settings") -> None:
+        """Hot-swap the Settings reference after the user edited config at runtime.
+
+        Called by the ``POST /config/vlm`` endpoint so a key saved through the
+        Web UI takes effect immediately, without a restart and without
+        rebuilding the (expensive) OCR engine. The cached VLM client is dropped
+        so the next ``_get_vlm()`` rebuilds it with the new key/base_url/model.
+
+        Note: the OCR engine captures settings at construction too, but only VLM
+        settings are editable through the UI, so we intentionally leave
+        ``self._ocr`` untouched.
+        """
+        self.settings = settings
+        self._vlm = None
+
     # -- main entry ---------------------------------------------------------
 
     def run(

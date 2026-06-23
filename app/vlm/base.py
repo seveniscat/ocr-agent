@@ -32,6 +32,34 @@ class VLMProvider(abc.ABC):
         """Read text inside ``polygon`` (in ``image`` coords)."""
         raise NotImplementedError
 
+    def ask_image(
+        self,
+        image_b64_data_url: str,
+        prompt: str,
+        *,
+        max_tokens: int = 1024,
+        json_mode: bool = False,
+        enable_thinking: bool | None = None,
+    ) -> tuple[str, float]:
+        """Ask the VLM one free-form question about one image.
+
+        Returns ``(raw_text, confidence)``. ``image_b64_data_url`` is a full
+        ``data:image/...;base64,...`` URL the provider can drop straight into
+        the OpenAI-compatible ``image_url`` slot. ``json_mode`` requests a JSON
+        object response where supported. ``enable_thinking`` (Qwen3.x) requests
+        deep reasoning before the answer; when both are set, providers should
+        honor thinking and drop json_mode (they're mutually exclusive on
+        DashScope), relying on the caller's tolerant parser.
+
+        Default raises ``NotImplementedError`` — providers opt in. The
+        understanding layer depends on this; ``recognize_crop`` does not, so
+        existing providers keep working until they implement it.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement ask_image(); "
+            "the understanding layer requires an ask_image-capable provider."
+        )
+
 
 def build_vlm(settings: Settings) -> VLMProvider:
     """Factory: pick a provider from ``settings.vlm_provider``."""

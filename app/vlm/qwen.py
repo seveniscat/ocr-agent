@@ -39,6 +39,7 @@ class QwenVLM(VLMProvider):
             base_url=settings.vlm_base_url,
         )
         self._model = settings.vlm_model
+        self._enable_thinking = getattr(settings, "vlm_enable_thinking", False)
 
     def recognize_crop(self, image, polygon) -> tuple[str, float]:
         # Tight bbox around the quad (art text on dielines is mostly axis-aligned).
@@ -54,27 +55,72 @@ class QwenVLM(VLMProvider):
         crop = image[y1:y2, x1:x2]
         b64 = _to_b64_jpeg(crop)
 
-        resp = self._client.chat.completions.create(
-            model=self._model,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "image_url", "image_url": {"url": b64}},
-                        {"type": "text", "text": _PROMPT},
-                    ],
-                }
-            ],
-            temperature=0.0,
-            max_tokens=128,
+        text, _conf = self.ask_image(
+            b64, _PROMPT, max_tokens=128, json_mode=False
         )
-        text = (resp.choices[0].message.content or "").strip()
+        text = text.strip()
         if not text or text.upper() == "EMPTY":
             return "", 0.0
         # No native score; we model confidence as 1 - (len/pixels heuristic) is
         # unreliable, so we return a flat-but-high value (the VLM only fires when
         # PaddleOCR was already unsure — winning by having *any* read beats none).
         text = re.sub(r"^['\"]|['\"]$", "", text)
+        return text, 0.8
+
+    def ask_image(
+        self,
+        image_b64_data_url: str,
+        prompt: str,
+        *,
+        max_tokens: int = 1024,
+        json_mode: bool = False,
+        enable_thinking: bool | None = None,
+    ) -> tuple[str, float]:
+        """Send one image + one prompt to Qwen-VL. Returns ``(raw_text, conf)``.
+
+        ``image_b64_data_url`` must be a full ``data:image/...;base64,...`` URL.
+        ``json_mode`` sets ``response_format={"type":"json_object"}``.
+
+        Thinking mode (Qwen3.x): when enabled, the model reasons before
+        answering (``extra_body={"enable_thinking": True}``). Note thinking mode
+        is incompatible with ``response_format=json_object`` — when both are
+        requested we honor thinking and drop json_mode, relying on the caller's
+        tolerant JSON parser instead. Defaults to the provider's setting
+        (``self._enable_thinking``) when ``None``.
+
+        Confidence is a flat 0.8 heuristic: Qwen-VL gives no native score, so
+        callers should rely on downstream validation (did the JSON parse?) as
+        the real quality signal.
+        """
+        want_thinking = (
+            self._enable_thinking if enable_thinking is None else enable_thinking
+        )
+        # thinking mode + json_object are mutually exclusive on DashScope;
+        # when thinking is on, drop json_mode and let the tolerant parser cope.
+        use_json = json_mode and not want_thinking
+
+        kwargs: dict = {
+            "model": self._model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image_url", "image_url": {"url": image_b64_data_url}},
+                        {"type": "text", "text": prompt},
+                    ],
+                }
+            ],
+            "temperature": 0.0,
+            "max_tokens": max_tokens,
+        }
+        if use_json:
+            kwargs["response_format"] = {"type": "json_object"}
+        if want_thinking:
+            # OpenAI-compatible passthrough for the DashScope-specific flag.
+            kwargs["extra_body"] = {"enable_thinking": True}
+        resp = self._client.chat.completions.create(**kwargs)
+        msg = resp.choices[0].message
+        text = (getattr(msg, "content", None) or "").strip()
         return text, 0.8
 
 

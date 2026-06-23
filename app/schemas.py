@@ -157,3 +157,171 @@ class PreprocessResponse(BaseModel):
     cropped_image_b64: Optional[str] = None
     # fraction of pixels removed by the crop (0.0 = nothing cropped)
     removed_ratio: float = 0.0
+
+
+class PanelItem(BaseModel):
+    """One main panel cut from a die-line (a box face)."""
+
+    index: int                          # 1-based, sorted top→bottom then left→right
+    bbox: list[int]                     # [x0, y0, x1, y1] in original-image px
+    width: int
+    height: int
+    image_b64: Optional[str] = None     # base64 PNG crop (only if preview requested)
+
+
+class PanelsResponse(BaseModel):
+    """Result of ``POST /panels`` — a die-line split into its main faces."""
+
+    width: int   # original image width (px)
+    height: int  # original image height (px)
+    count: int   # number of panels returned (typically 5 or 6)
+    panels: list[PanelItem]
+    # The detected main-body bbox [x0,y0,x1,y1] (original px). The equal-split
+    # panels subdivide this box. None when no subject was found (blank image).
+    subject: Optional[list[int]] = None
+
+
+# ---------------------------------------------------------------------------
+# Interactive panel splitting (auto candidates + user confirmation)
+# ---------------------------------------------------------------------------
+
+
+class CandidateLine(BaseModel):
+    """A proposed cut line from ``POST /panels/candidates``.
+
+    ``pos`` is the pixel coordinate along the perpendicular axis (y for
+    horizontal lines, x for vertical lines), in original-image px.
+    ``confidence`` is one of {0.6 low, 0.8 mid, 1.0 high}. ``selected`` is the
+    server's default pre-selection (high-conf only); the user can toggle any
+    line in the UI before computing panels.
+    """
+
+    pos: int
+    orientation: Literal["h", "v"]
+    confidence: float
+    selected: bool
+
+
+class CandidatesResponse(BaseModel):
+    """Proposed cut lines for the user to confirm in the interactive splitter."""
+
+    width: int
+    height: int
+    h_lines: list[CandidateLine]   # horizontal lines (each has a y coordinate)
+    v_lines: list[CandidateLine]   # vertical lines (each has an x coordinate)
+
+
+class ComputePanelsRequest(BaseModel):
+    """User-confirmed cut lines → ``POST /panels/compute``."""
+
+    h_lines: list[int] = Field(
+        default_factory=list,
+        description="Confirmed y-coordinates of horizontal cut lines (orig px).",
+    )
+    v_lines: list[int] = Field(
+        default_factory=list,
+        description="Confirmed x-coordinates of vertical cut lines (orig px).",
+    )
+    width: int
+    height: int
+    image_b64: Optional[str] = Field(
+        None,
+        description="Base64 image (data URI or raw). When present, each returned "
+                    "panel includes a base64 PNG crop. Omit for bbox-only output.",
+    )
+
+
+class ComputePanelsResponse(BaseModel):
+    """Panels computed from user-confirmed cut lines."""
+
+    width: int
+    height: int
+    count: int
+    panels: list[PanelItem]
+
+
+class VlmPanelItem(BaseModel):
+    """One panel detected by the VLM splitter."""
+
+    index: int
+    bbox: list[int]                     # [x0,y0,x1,y1] original-image px
+    width: int
+    height: int
+    label: str = "unknown"              # front/back/left/right/top/bottom/unknown
+    image_b64: Optional[str] = None
+
+
+class VlmPanelsResponse(BaseModel):
+    """Result of ``POST /panels/vlm`` — VLM-identified face boxes."""
+
+    width: int
+    height: int
+    count: int
+    panels: list[VlmPanelItem]
+    model: str = ""
+    # Populated when VLM/parse failed — UI shows this instead of an empty list.
+    error: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
+# AI Native understanding layer (``POST /understand``)
+# ---------------------------------------------------------------------------
+
+# Keep this list in sync with the prompt in app/understanding.py.
+ElementKind = Literal[
+    "logo",
+    "product_image",
+    "text_block",
+    "barcode",
+    "qr",
+    "nutrition_table",
+    "color_block",
+    "other",
+]
+
+
+class KeyElement(BaseModel):
+    """One salient visual element the VLM noticed while understanding the image.
+
+    ``location`` is a coarse normalized box ``[x, y, w, h]`` in 0–1 fractions of
+    the image. VLMs are unreliable at precise localization, so treat it as a
+    "roughly here" hint — never as a pixel-accurate bbox. None when the VLM
+    didn't offer a location.
+    """
+
+    kind: ElementKind
+    description: str
+    location: Optional[list[float]] = None
+
+
+class UnderstandingResult(BaseModel):
+    """Structured 'what is this image' answer from the VLM understanding layer.
+
+    This is the first AI-Native output: the VLM has graduated from "art-text
+    recognition fallback" to "image understander". Level-1 understanding is a
+    single whole-image pass (no per-panel calls, no OCR) — enough to answer
+    "what kind of packaging is this" and surface the salient elements.
+    """
+
+    category: str                      # e.g. "食品-饮料" / "日化" / "药品" / "其他"
+    category_confidence: float = Field(ge=0.0, le=1.0)
+    panel_count_estimate: int = Field(
+        ge=1, le=20,
+        description="VLM's guess at the panel/face count "
+                    "(1=单面标签, 6=纸盒展开图).",
+    )
+    style_keywords: list[str] = Field(
+        default_factory=list,
+        description='Style descriptors, e.g. ["极简","手绘","高饱和"].',
+    )
+    dominant_colors: list[str] = Field(
+        default_factory=list,
+        description='Hex colors, e.g. ["#E63946","#F1FAEE"].',
+    )
+    key_elements: list[KeyElement] = Field(default_factory=list)
+    summary: str = Field("", description="一句话概述。")
+    # Populated when JSON parsing/validation failed — the raw VLM output is kept
+    # so the UI can show *something* instead of an opaque error. In that case
+    # category_confidence is 0.0 and the typed fields are best-effort defaults.
+    raw_note: Optional[str] = None
+    model: str = ""                    # which VLM produced this

@@ -148,6 +148,52 @@
     stroke: var(--warn); stroke-width: 1.5; stroke-dasharray: 4 3;
   }
 
+  .canvas svg rect.panel-box {
+    fill: rgba(79, 140, 255, .12); stroke: var(--accent); stroke-width: 2;
+  }
+  .canvas svg rect.panel-box.hl {
+    fill: rgba(79, 140, 255, .30);
+    filter: drop-shadow(0 0 4px var(--accent));
+  }
+  .canvas svg text.panel-num {
+    fill: #fff; font-size: 32px; font-weight: 700;
+    paint-order: stroke; stroke: var(--accent); stroke-width: 2px;
+  }
+  /* AI understanding element boxes (key_elements, coarse VLM localization) */
+  .canvas svg rect.und-box {
+    fill: rgba(99, 102, 241, .10); stroke: var(--und, #6366f1); stroke-width: 2;
+    stroke-dasharray: 8 4;
+  }
+  .canvas svg rect.und-box.hl {
+    fill: rgba(99, 102, 241, .32);
+    filter: drop-shadow(0 0 5px var(--und, #6366f1));
+  }
+  .canvas svg text.und-lbl {
+    fill: #fff; font-size: 22px; font-weight: 600;
+    paint-order: stroke; stroke: var(--und, #6366f1); stroke-width: 2px;
+  }
+  /* candidate cut lines (interactive splitting) */
+  .canvas svg line.cutline {
+    pointer-events: stroke; cursor: pointer;
+    stroke-width: 3;
+  }
+  .canvas svg line.cutline.selected { stroke: var(--accent-2); stroke-width: 4; }
+  .canvas svg line.cutline.conf-high { stroke: var(--accent-2); }
+  .canvas svg line.cutline.conf-high.unselected { stroke: var(--accent-2); stroke-dasharray: 12 6; opacity: .55; }
+  .canvas svg line.cutline.conf-mid { stroke: var(--warn); stroke-dasharray: 10 6; opacity: .8; }
+  .canvas svg line.cutline.conf-mid.selected { stroke: var(--warn); stroke-dasharray: none; opacity: 1; stroke-width: 4; }
+  .canvas svg line.cutline.conf-low { stroke: #888; stroke-dasharray: 6 5; opacity: .5; }
+  .canvas svg line.cutline.conf-low.selected { stroke: #888; stroke-dasharray: none; opacity: .9; stroke-width: 4; }
+  .canvas svg rect.preview-panel {
+    fill: rgba(79,140,255,.06); stroke: rgba(79,140,255,.4); stroke-width: 1.5;
+    pointer-events: none;
+  }
+
+  /* split toolbar */
+  .split-toolbar { padding: 8px 14px 10px; border-top: 1px solid var(--border); background: var(--panel-2); }
+  .split-info { font-size: 12px; color: var(--accent-2); margin-bottom: 6px; font-family: "SF Mono", Menlo, monospace; }
+  .split-hint { font-size: 10px; color: var(--muted); margin-top: 6px; line-height: 1.5; }
+
   /* crop preview modal */
   .modal {
     position: fixed; inset: 0; background: rgba(0,0,0,.75);
@@ -206,6 +252,38 @@
   .item .text { color: var(--text); word-break: break-all; white-space: pre-wrap; }
   .item .src { color: var(--muted); font-size: 10px; margin-top: 2px; }
 
+  /* AI understanding cards */
+  .und-hero {
+    padding: 12px 14px; border-bottom: 1px solid var(--border);
+    background: linear-gradient(180deg, var(--panel-2), var(--panel));
+  }
+  .und-cat {
+    font-size: 16px; font-weight: 600; color: var(--text);
+    display: flex; align-items: center; gap: 8px;
+  }
+  .und-conf { font-size: 11px; padding: 1px 7px; border-radius: 10px; font-weight: 600; }
+  .und-conf.hi { background: var(--accent-2); color: var(--bg); }
+  .und-conf.mid { background: var(--warn); color: var(--bg); }
+  .und-conf.lo { background: var(--err); color: var(--bg); }
+  .und-summary { color: var(--text); font-size: 13px; margin-top: 6px; line-height: 1.5; }
+  .und-meta { color: var(--muted); font-size: 11px; margin-top: 6px; }
+  .und-section { padding: 10px 14px; border-bottom: 1px solid var(--border); }
+  .und-section h5 {
+    margin: 0 0 7px; font-size: 10px; color: var(--muted);
+    text-transform: uppercase; letter-spacing: .5px; font-weight: 600;
+  }
+  .und-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+  .chip {
+    font-size: 11px; padding: 2px 8px; border-radius: 10px;
+    background: var(--panel-2); border: 1px solid var(--border); color: var(--text);
+  }
+  .swatch-row { display: flex; gap: 6px; align-items: center; }
+  .swatch { width: 18px; height: 18px; border-radius: 4px; border: 1px solid var(--border); }
+  .und-elem { padding: 8px 10px; border-radius: 6px; margin-bottom: 5px; background: var(--panel-2); border: 1px solid var(--border); font-size: 12px; }
+  .und-elem .row { display: flex; align-items: center; gap: 7px; margin-bottom: 2px; }
+  .und-elem .desc { color: var(--text); }
+  .und-raw { margin: 10px 14px; padding: 8px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px; font-size: 10px; color: var(--muted); max-height: 140px; overflow: auto; white-space: pre-wrap; word-break: break-all; }
+
   pre.json {
     margin: 0; padding: 10px; font-size: 11px; line-height: 1.5;
     font-family: "SF Mono", Menlo, Consolas, monospace; color: var(--text);
@@ -258,10 +336,75 @@
       <div class="action-row">
         <button class="btn primary" id="recognizeBtn" disabled>▶ 识别</button>
         <button class="btn" id="previewCropBtn" disabled>✂ 预览裁剪</button>
+        <button class="btn" id="splitPanelsBtn" disabled>⊞ 拆面</button>
+        <button class="btn" id="understandBtn" disabled>✦ AI 理解</button>
         <button class="btn ghost" id="clearBtn" disabled>清除</button>
       </div>
       <div class="status" id="status"></div>
+      <!-- Interactive splitting toolbar (shown only in split mode) -->
+      <div class="split-toolbar" id="splitToolbar" style="display:none">
+        <div class="split-info" id="splitInfo">已选 0 横 + 0 纵 → 1 个面板</div>
+        <div class="action-row">
+          <button class="btn primary" id="confirmSplitBtn">✓ 确认拆面</button>
+          <button class="btn ghost" id="cancelSplitBtn">取消</button>
+        </div>
+        <div class="split-hint">单击线: 切换选中 · 双击空白: 添加线(水平/垂直自动) · 绿=高置信 黄=中 灰=低</div>
+      </div>
     </div>
+
+    <!-- VLM provider config (persisted to .env; powers AI 理解 + art-text fallback) -->
+    <details class="params" id="vlmConfig" open>
+      <summary>
+        <span class="chev">▸</span> VLM 配置（AI 理解 / 艺术字兜底）
+        <span class="badge" id="vlmBadge">未配置</span>
+      </summary>
+      <div class="param-group">
+        <div class="field">
+          <label>Provider</label>
+          <input type="text" value="qwen" disabled style="opacity:.6">
+          <div class="hint">OpenAI 兼容协议接入 DashScope / 自建端点（当前仅支持 qwen）</div>
+        </div>
+        <div class="field">
+          <label>base_url</label>
+          <input type="text" id="cfg_baseurl" placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1">
+        </div>
+        <div class="field">
+          <label>model</label>
+          <select id="cfg_model">
+            <optgroup label="推荐（最新一代）">
+              <option value="qwen3.7-plus">qwen3.7-plus · 性能最强（推荐）</option>
+            </optgroup>
+            <optgroup label="均衡 / 快速（性价比）">
+              <option value="qwen3.6-plus">qwen3.6-plus · 均衡</option>
+              <option value="qwen3.6-flash">qwen3.6-flash · 快速低成本</option>
+              <option value="qwen3.5-flash">qwen3.5-flash · 性价比</option>
+            </optgroup>
+            <optgroup label="专项（物体定位）">
+              <option value="qwen3-vl-plus">qwen3-vl-plus · 2D/3D 定位</option>
+              <option value="qwen3-vl-flash">qwen3-vl-flash · 定位快速</option>
+            </optgroup>
+            <optgroup label="自定义">
+              <option value="__custom__">其它（手动输入）…</option>
+            </optgroup>
+          </select>
+          <input type="text" id="cfg_model_custom" placeholder="手动输入模型名" style="display:none; margin-top:4px;">
+          <div class="hint">⚠️ qwen-vl-max / qwen-vl-plus 将于 2026-07-13 下线，请用 qwen3.x 系列</div>
+        </div>
+        <div class="field">
+          <label>api_key <span class="val" id="cfg_keyhint"></span></label>
+          <input type="password" id="cfg_apikey" placeholder="留空=沿用已保存的 key" autocomplete="off">
+          <div class="hint" id="cfg_keyhint2">通过 OpenAI 兼容协议接入；本输入框只发送新值</div>
+        </div>
+        <div class="field">
+          <label><input type="checkbox" id="cfg_understand" checked> 启用 AI 理解层（POST /understand）</label>
+          <label><input type="checkbox" id="cfg_thinking"> 思考模式（Qwen3.x 深度推理；与 JSON 严格输出互斥，靠容错解析）</label>
+        </div>
+        <div class="action-row" style="margin-top:6px">
+          <button class="btn primary" id="saveVlmBtn">💾 保存配置</button>
+          <span class="val" id="cfg_status"></span>
+        </div>
+      </div>
+    </details>
 
     <!-- Crop params -->
     <details class="params" id="cropParams" open>
@@ -370,16 +513,21 @@
       <span><i style="background:var(--art)"></i>艺术字</span>
       <span><i style="background:var(--qr)"></i>二维码</span>
       <span><i style="background:var(--barcode)"></i>条码</span>
+      <span><i style="background:#6366f1"></i>理解元素（按类型着色）</span>
     </div>
 
     <div class="tabs">
       <div class="tab active" data-tab="items">识别结果 <span id="count"></span></div>
+      <div class="tab" data-tab="understand">理解</div>
       <div class="tab" data-tab="json">JSON</div>
     </div>
 
     <div class="tabbody">
       <div class="pane active" id="pane-items">
         <div style="color:var(--muted);font-size:12px;padding:14px" id="itemsPlaceholder">上传图片后点击「识别」</div>
+      </div>
+      <div class="pane" id="pane-understand">
+        <div style="color:var(--muted);font-size:12px;padding:14px" id="understandPlaceholder">上传图片后点击「✦ AI 理解」，让 VLM 看懂这张图</div>
       </div>
       <div class="pane" id="pane-json"><pre class="json" id="jsonOut"></pre></div>
     </div>
@@ -405,7 +553,7 @@ const $ = id => document.getElementById(id);
 // =========================================================================
 // pan-zoom viewer (unchanged logic)
 // =========================================================================
-const view = { iw:0, ih:0, scale:1, tx:0, ty:0, fitScale:1, minScale:0.05, maxScale:40, items:[], activeIdx:-1 };
+const view = { iw:0, ih:0, scale:1, tx:0, ty:0, fitScale:1, minScale:0.05, maxScale:40, items:[], activeIdx:-1, crop:null, panels:[], activePanel:-1, understanding:null, activeUndIdx:-1, candidates:[], splitMode:false, subject:null };
 const viewer = $('viewer'), canvas = $('canvas'), img = $('img'), svg = $('svg');
 
 function showImage(srcUrl) {
@@ -452,6 +600,139 @@ function drawPolygons() {
     p.style.strokeWidth = (baseW/view.scale).toFixed(3);
   });
   drawCropOverlay();
+  drawPanelsOverlay();
+  drawCandidatesOverlay();
+  drawUnderstandingOverlay();
+}
+
+// Draw candidate/confirmed cut lines during interactive splitting.
+function drawCandidatesOverlay() {
+  const ns = 'http://www.w3.org/2000/svg';
+  svg.querySelectorAll('.cutline, .preview-panel').forEach(n => n.remove());
+  if (!view.splitMode) return;
+
+  // 1. Preview panels (faint blue rects) so the user sees the live result.
+  for (const [x0, y0, x1, y1] of previewPanels()) {
+    const r = document.createElementNS(ns, 'rect');
+    r.setAttribute('x', x0); r.setAttribute('y', y0);
+    r.setAttribute('width', x1 - x0); r.setAttribute('height', y1 - y0);
+    r.setAttribute('class', 'preview-panel');
+    r.style.strokeWidth = (1.5 / view.scale).toFixed(3);
+    svg.appendChild(r);
+  }
+
+  // 2. Candidate lines — clickable to toggle.
+  const W = view.iw, H = view.ih;
+  for (const c of view.candidates) {
+    const ln = document.createElementNS(ns, 'line');
+    if (c.orientation === 'h') {
+      ln.setAttribute('x1', 0); ln.setAttribute('y1', c.pos);
+      ln.setAttribute('x2', W); ln.setAttribute('y2', c.pos);
+    } else {
+      ln.setAttribute('x1', c.pos); ln.setAttribute('y1', 0);
+      ln.setAttribute('x2', c.pos); ln.setAttribute('y2', H);
+    }
+    const confClass = c.confidence >= 1.0 ? 'conf-high' : c.confidence >= 0.8 ? 'conf-mid' : 'conf-low';
+    ln.setAttribute('class', `cutline ${confClass} ${c.selected ? 'selected' : 'unselected'}`);
+    ln.style.strokeWidth = ((c.selected ? 4 : 3) / view.scale).toFixed(3);
+    ln.dataset.cid = c.id;
+    ln.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      toggleCandidate(c.id);
+    });
+    svg.appendChild(ln);
+  }
+}
+
+// Draw detected main panels as numbered blue boxes.
+function drawPanelsOverlay() {
+  svg.querySelectorAll('.panel-box, .panel-num, .subject-box').forEach(n => n.remove());
+  const ns = 'http://www.w3.org/2000/svg';
+  // Subject (main-body) bbox — yellow dashed, drawn first so panels sit on top.
+  if (view.subject) {
+    const [x0, y0, x1, y1] = view.subject;
+    const r = document.createElementNS(ns, 'rect');
+    r.setAttribute('x', x0); r.setAttribute('y', y0);
+    r.setAttribute('width', x1 - x0); r.setAttribute('height', y1 - y0);
+    r.setAttribute('class', 'subject-box');
+    r.setAttribute('fill', 'none');
+    r.setAttribute('stroke', '#facc15');
+    r.setAttribute('stroke-width', (3 / view.scale).toFixed(3));
+    r.setAttribute('stroke-dasharray', (10 / view.scale).toFixed(2) + ' ' + (5 / view.scale).toFixed(2));
+    svg.appendChild(r);
+  }
+  if (!view.panels || !view.panels.length) return;
+  view.panels.forEach((p, i) => {
+    const [x0, y0, x1, y1] = p.bbox;
+    const r = document.createElementNS(ns, 'rect');
+    r.setAttribute('x', x0); r.setAttribute('y', y0);
+    r.setAttribute('width', x1 - x0); r.setAttribute('height', y1 - y0);
+    r.setAttribute('class', 'panel-box' + (i === view.activePanel ? ' hl' : ''));
+    r.style.strokeWidth = (2 / view.scale).toFixed(3);
+    svg.appendChild(r);
+    // Panel number in the top-left corner.
+    const t = document.createElementNS(ns, 'text');
+    t.setAttribute('x', x0 + 6 / view.scale);
+    t.setAttribute('y', y0 + 30 / view.scale);
+    t.setAttribute('class', 'panel-num');
+    t.style.fontSize = (28 / view.scale).toFixed(1) + 'px';
+    t.style.strokeWidth = (2 / view.scale).toFixed(2);
+    t.textContent = '#' + (i + 1);
+    svg.appendChild(t);
+  });
+}
+
+// Draw the AI understanding element boxes (key_elements). location is a
+// normalized [x, y, w, h] in 0–1 fractions of the image — convert to original
+// image px (the SVG viewBox is in image px, so no further scaling needed).
+// Color by element kind using the existing palette tokens.
+function drawUnderstandingOverlay() {
+  svg.querySelectorAll('.und-box, .und-lbl').forEach(n => n.remove());
+  const u = view.understanding;
+  if (!u || !u.key_elements || !u.key_elements.length || !view.iw) return;
+  const ns = 'http://www.w3.org/2000/svg';
+  const IW = view.iw, IH = view.ih;
+  // kind → CSS color var (falls back to the indigo default).
+  const kindColor = {
+    logo: 'var(--art)',
+    product_image: 'var(--accent)',
+    text_block: 'var(--text-color)',
+    barcode: 'var(--barcode)',
+    qr: 'var(--qr)',
+    nutrition_table: 'var(--warn)',
+    color_block: 'var(--accent-2)',
+    other: 'var(--und, #6366f1)',
+  };
+  u.key_elements.forEach((e, i) => {
+    const loc = e.location;
+    if (!Array.isArray(loc) || loc.length !== 4) return;
+    let [nx, ny, nw, nh] = loc.map(v => Number(v));
+    // Clamp to [0,1]; skip if the VLM gave garbage.
+    if (![nx, ny, nw, nh].every(v => Number.isFinite(v))) return;
+    nx = Math.min(1, Math.max(0, nx));
+    ny = Math.min(1, Math.max(0, ny));
+    nw = Math.min(1 - nx, Math.max(0, nw));
+    nh = Math.min(1 - ny, Math.max(0, nh));
+    if (nw <= 0 || nh <= 0) return;
+    const x = nx * IW, y = ny * IH, w = nw * IW, h = nh * IH;
+    const col = kindColor[e.kind] || 'var(--und, #6366f1)';
+    const r = document.createElementNS(ns, 'rect');
+    r.setAttribute('x', x); r.setAttribute('y', y);
+    r.setAttribute('width', w); r.setAttribute('height', h);
+    r.setAttribute('class', 'und-box' + (i === view.activeUndIdx ? ' hl' : ''));
+    r.style.stroke = col;
+    r.dataset.idx = i;
+    svg.appendChild(r);
+    // Label: kind tag in the top-left of the box.
+    const t = document.createElementNS(ns, 'text');
+    t.setAttribute('x', x + 4 / view.scale);
+    t.setAttribute('y', y + 22 / view.scale);
+    t.setAttribute('class', 'und-lbl');
+    t.style.fontSize = (20 / view.scale).toFixed(1) + 'px';
+    t.style.stroke = col;
+    t.textContent = e.kind;
+    svg.appendChild(t);
+  });
 }
 
 // Draw the auto-crop frame on the image (4 dark masks outside the crop box +
@@ -510,7 +791,22 @@ let dragging=false,lx=0,ly=0;
 viewer.addEventListener('mousedown',e=>{if(e.button!==0)return;dragging=true;lx=e.clientX;ly=e.clientY;viewer.classList.add('grabbing');});
 window.addEventListener('mousemove',e=>{if(!dragging)return;view.tx+=e.clientX-lx;view.ty+=e.clientY-ly;lx=e.clientX;ly=e.clientY;setTransform();});
 window.addEventListener('mouseup',()=>{dragging=false;viewer.classList.remove('grabbing');});
-viewer.addEventListener('dblclick',()=>{if(view.iw)fit();});
+viewer.addEventListener('dblclick',(e)=>{
+  if (!view.iw) return;
+  if (view.splitMode) {
+    // Add a cut line at the double-clicked position. Shift = horizontal line,
+    // plain = vertical line (most die-line splits are between vertical faces).
+    const r = viewer.getBoundingClientRect();
+    const imgX = (e.clientX - r.left - view.tx) / view.scale;
+    const imgY = (e.clientY - r.top - view.ty) / view.scale;
+    if (imgX >= 0 && imgX <= view.iw && imgY >= 0 && imgY <= view.ih) {
+      addCandidateAt(imgX, imgY, e.shiftKey);
+      e.preventDefault();
+    }
+    return;
+  }
+  fit();
+});
 $('zoomIn').onclick=()=>{const r=viewer.getBoundingClientRect();zoomAt(r.left+r.width/2,r.top+r.height/2,1.25);};
 $('zoomOut').onclick=()=>{const r=viewer.getBoundingClientRect();zoomAt(r.left+r.width/2,r.top+r.height/2,1/1.25);};
 $('reset').onclick=fit; $('fit').onclick=fit;
@@ -587,6 +883,7 @@ function buildOptions() {
 const CROP_DEFAULTS = { cropt: 240, cropp: 0 };
 const cropParams = { ...CROP_DEFAULTS };
 view.crop = null;  // current crop box [x0,y0,x1,y1] in image coords, or null
+view.panels = [];  // detected main panels [{bbox:[x0,y0,x1,y1], image_b64}]
 
 function syncCropUI() {
   $('p_cropt').value = cropParams.cropt; $('v_cropt').textContent = cropParams.cropt;
@@ -715,6 +1012,349 @@ function drawModalFrame(im, data) {
 }
 
 // =========================================================================
+// panel splitting flow — interactive: auto candidates + user confirmation
+// =========================================================================
+$('splitPanelsBtn').addEventListener('click', startSplit);
+$('confirmSplitBtn').addEventListener('click', confirmSplit);
+$('cancelSplitBtn').addEventListener('click', cancelSplit);
+
+// State for the interactive splitter. `candidates` = all proposed lines
+// {pos, orientation, confidence, selected, id}. `confirmedPanels` = final
+// panels after the user clicked ✓.
+view.candidates = [];
+view.splitMode = false;
+
+async function startSplit() {
+  if (!currentFile) return;
+  $('splitPanelsBtn').disabled = true;
+  setStatus('VLM 识别面板中（语义布局，约10秒）…', 'busy');
+  try {
+    const fd = new FormData();
+    fd.append('file', currentFile);
+    const r = await fetch('/panels/vlm?preview=true', { method: 'POST', body: fd });
+    if (!r.ok) throw new Error(`HTTP ${r.status}: ${(await r.text()).slice(0, 200)}`);
+    const data = await r.json();
+    view.splitMode = false;
+    view.candidates = [];
+    view.panels = data.panels || [];
+    view.subject = null;            // VLM mode has no subject box
+    view.activePanel = -1;
+    drawPolygons();
+    renderPanelList(data);
+    if (data.error) {
+      setStatus('VLM 拆面失败: ' + data.error, 'error');
+    } else {
+      const labels = (data.panels || []).map(p => p.label).filter(Boolean).join(' ');
+      setStatus(`VLM 拆出 ${data.count} 个面板${labels ? ' · ' + labels : ''}`, 'ok');
+    }
+  } catch (err) {
+    setStatus('拆面失败: ' + err.message, 'error'); console.error(err);
+  } finally {
+    $('splitPanelsBtn').disabled = false;
+  }
+}
+
+function cancelSplit() {
+  view.splitMode = false;
+  view.candidates = [];
+  view.panels = [];
+  $('splitToolbar').style.display = 'none';
+  drawPolygons();
+  setStatus('已取消拆面', '');
+}
+
+async function confirmSplit() {
+  if (!currentFile) return;
+  const hs = view.candidates.filter(c => c.orientation === 'h' && c.selected).map(c => c.pos);
+  const vs = view.candidates.filter(c => c.orientation === 'v' && c.selected).map(c => c.pos);
+  $('confirmSplitBtn').disabled = true;
+  setStatus('生成面板裁剪…', 'busy');
+  try {
+    // We need the original image dims + base64 for cropping on the server.
+    const w = view.iw, h = view.ih;
+    const fd = new FormData();
+    fd.append('h_lines', JSON.stringify(hs));
+    fd.append('v_lines', JSON.stringify(vs));
+    fd.append('width', w);
+    fd.append('height', h);
+    fd.append('file', currentFile);  // server reads image from file upload
+    const r = await fetch('/panels/compute', { method: 'POST', body: fd });
+    if (!r.ok) throw new Error(`HTTP ${r.status}: ${(await r.text()).slice(0, 200)}`);
+    const data = await r.json();
+    view.splitMode = false;
+    view.candidates = [];
+    view.panels = data.panels || [];
+    view.activePanel = -1;
+    $('splitToolbar').style.display = 'none';
+    drawPolygons();
+    renderPanelList(data);
+    setStatus(`拆出 ${data.count} 个面板 · 点击可下载`, 'ok');
+  } catch (err) {
+    setStatus('生成面板失败: ' + err.message, 'error'); console.error(err);
+  } finally {
+    $('confirmSplitBtn').disabled = false;
+  }
+}
+
+// Front-end mirror of the server's compute_panels — for live preview only.
+function previewPanels() {
+  const hs = view.candidates.filter(c => c.orientation === 'h' && c.selected).map(c => c.pos).sort((a,b)=>a-b);
+  const vs = view.candidates.filter(c => c.orientation === 'v' && c.selected).map(c => c.pos).sort((a,b)=>a-b);
+  const W = view.iw, H = view.ih;
+  const yb = [0, ...hs.filter(y => y > 0 && y < H), H];
+  const xb = [0, ...vs.filter(x => x > 0 && x < W), W];
+  const panels = [];
+  for (let i = 0; i < yb.length - 1; i++)
+    for (let j = 0; j < xb.length - 1; j++)
+      panels.push([xb[j], yb[i], xb[j+1], yb[i+1]]);
+  return panels;
+}
+
+function updateSplitInfo() {
+  const hs = view.candidates.filter(c => c.orientation === 'h' && c.selected).length;
+  const vs = view.candidates.filter(c => c.orientation === 'v' && c.selected).length;
+  const n = previewPanels().length;
+  $('splitInfo').textContent = `已选 ${hs} 横 + ${vs} 纵 → ${n} 个面板`;
+}
+
+// Toggle a candidate line's selection on click.
+function toggleCandidate(id) {
+  const c = view.candidates.find(x => x.id === id);
+  if (!c) return;
+  c.selected = !c.selected;
+  drawPolygons();
+  updateSplitInfo();
+}
+
+// Double-click on the image → add a new candidate line at that position.
+// Orientation chosen by proximity to the click: if the click sits closer to a
+// horizontal line's "row" feel (rare), default to vertical (most die-lines
+// are split by vertical lines between faces). We add BOTH a candidate the user
+// can keep, and pick orientation by shift key (shift = horizontal).
+function addCandidateAt(imgX, imgY, horizontal) {
+  const pos = Math.round(horizontal ? imgY : imgX);
+  const cid = (view.candidates.reduce((m, c) => Math.max(m, c.id), -1) || 0) + 1;
+  view.candidates.push({ id: cid, pos, orientation: horizontal ? 'h' : 'v',
+    confidence: 1.0, selected: true });
+  drawPolygons();
+  updateSplitInfo();
+}
+
+function renderPanelList(data) {
+  // Render the panel list into the items pane (replaces item list).
+  const pane = $('pane-items');
+  if (!data.count) {
+    pane.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:14px">未检测到面板</div>';
+    return;
+  }
+  pane.innerHTML = '';
+  const labelZh = {front:'正面',back:'背面',left:'左面',right:'右面',top:'顶面',bottom:'底面',unknown:'面板'};
+  data.panels.forEach((p, i) => {
+    const div = document.createElement('div');
+    div.className = 'item';
+    const label = labelZh[p.label] || p.label || '面板';
+    div.innerHTML = `
+      <div class="row1">
+        <span class="tag" style="background:var(--accent);color:#fff">${p.index}. ${label}</span>
+        <span class="conf">${p.width}×${p.height}</span>
+      </div>
+      <div class="text" style="color:var(--muted)">bbox [${p.bbox.join(', ')}]</div>`;
+    div.addEventListener('mouseenter', () => { view.activePanel = i; drawPanelsOverlay(); });
+    div.addEventListener('mouseleave', () => { view.activePanel = -1; drawPanelsOverlay(); });
+    div.style.cursor = 'pointer';
+    // Click to download the panel crop.
+    if (p.image_b64) {
+      div.title = '点击下载此面板';
+      div.addEventListener('click', () => {
+        const a = document.createElement('a');
+        a.href = 'data:image/png;base64,' + p.image_b64;
+        a.download = `panel_${p.index}_${p.label || 'face'}_${p.width}x${p.height}.png`;
+        a.click();
+      });
+    }
+    pane.appendChild(div);
+  });
+  // Also dump the raw JSON.
+  $('jsonOut').textContent = JSON.stringify(data, (k, v) => k === 'image_b64' && typeof v === 'string' ? `<base64 ${v.length} chars>` : v, 2);
+  // Switch to items tab so the user sees the list.
+  document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+  document.querySelector('.tab[data-tab=items]').classList.add('active');
+  document.querySelectorAll('.pane').forEach(p => p.classList.remove('active'));
+  $('pane-items').classList.add('active');
+}
+
+// =========================================================================
+// VLM provider config flow (GET/POST /config/vlm, persisted to .env)
+// =========================================================================
+$('saveVlmBtn').addEventListener('click', saveVlmConfig);
+
+function _setModelSelect(model) {
+  // Select the dropdown option matching `model`; if none matches, switch to the
+  // custom slot and pre-fill the text box so the saved value isn't lost.
+  const sel = $('cfg_model');
+  const custom = $('cfg_model_custom');
+  const known = Array.from(sel.options).map(o => o.value);
+  if (model && !known.includes(model)) {
+    sel.value = '__custom__';
+    custom.value = model;
+    custom.style.display = 'block';
+  } else {
+    sel.value = model || 'qwen3.7-plus';
+    custom.value = '';
+    custom.style.display = 'none';
+  }
+}
+
+function _readModelSelect() {
+  // Returns the effective model value (custom text if "其它" is chosen).
+  const sel = $('cfg_model');
+  return sel.value === '__custom__' ? $('cfg_model_custom').value.trim() : sel.value;
+}
+
+$('cfg_model').addEventListener('change', e => {
+  $('cfg_model_custom').style.display = e.target.value === '__custom__' ? 'block' : 'none';
+});
+
+function applyVlmConfig(d) {
+  // d = { provider, base_url, model, api_key_masked, has_key, understand_enabled, enable_thinking }
+  $('cfg_baseurl').value = d.base_url || '';
+  _setModelSelect(d.model || 'qwen3.7-plus');
+  $('cfg_understand').checked = !!d.understand_enabled;
+  $('cfg_thinking').checked = !!d.enable_thinking;
+  // Never put the real key in the field. Show the masked form as a hint + badge.
+  $('cfg_apikey').value = '';
+  $('cfg_apikey').placeholder = d.has_key ? `已配置 ${d.api_key_masked}（留空=不改）` : '输入 API key';
+  $('cfg_keyhint').textContent = d.has_key ? `(${d.api_key_masked})` : '';
+  const badge = $('vlmBadge');
+  badge.textContent = d.has_key ? '已配置' : '未配置';
+  badge.classList.toggle('show', true);
+  badge.style.background = d.has_key ? 'var(--accent-2)' : 'var(--warn)';
+  badge.style.color = 'var(--bg)';
+}
+
+async function loadVlmConfig() {
+  try {
+    const r = await fetch('/config/vlm');
+    if (r.ok) applyVlmConfig(await r.json());
+  } catch (e) { /* non-fatal: config panel just stays at placeholders */ }
+}
+
+async function saveVlmConfig() {
+  const btn = $('saveVlmBtn');
+  const payload = {
+    base_url: $('cfg_baseurl').value.trim() || null,
+    model: _readModelSelect() || null,
+    api_key: $('cfg_apikey').value || null,   // empty → backend keeps stored key
+    understand_enabled: $('cfg_understand').checked,
+    enable_thinking: $('cfg_thinking').checked,
+  };
+  btn.disabled = true;
+  $('cfg_status').textContent = '保存中…';
+  $('cfg_status').style.color = 'var(--muted)';
+  try {
+    const r = await fetch('/config/vlm', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}: ${(await r.text()).slice(0, 160)}`);
+    applyVlmConfig(await r.json());
+    $('cfg_status').textContent = '✓ 已保存';
+    $('cfg_status').style.color = 'var(--accent-2)';
+  } catch (err) {
+    $('cfg_status').textContent = '保存失败: ' + err.message;
+    $('cfg_status').style.color = 'var(--err)';
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// =========================================================================
+// AI understanding flow (POST /understand)
+// =========================================================================
+$('understandBtn').addEventListener('click', understand);
+
+async function understand() {
+  if (!currentFile) return;
+  $('understandBtn').disabled = true;
+  setStatus('AI 理解中（VLM 整图分析）…', 'busy');
+  try {
+    const fd = new FormData();
+    fd.append('file', currentFile);
+    const r = await fetch('/understand', { method: 'POST', body: fd });
+    if (!r.ok) throw new Error(`HTTP ${r.status}: ${(await r.text()).slice(0, 200)}`);
+    const data = await r.json();
+    view.understanding = data;
+    renderUnderstanding(data);
+    setStatus('AI 理解完成', 'ok');
+  } catch (err) {
+    setStatus('AI 理解失败: ' + err.message, 'error'); console.error(err);
+  } finally {
+    $('understandBtn').disabled = false;
+  }
+}
+
+function _confClass(c) {
+  if (c >= 0.7) return 'hi';
+  if (c >= 0.4) return 'mid';
+  return 'lo';
+}
+
+function _escapeHtml(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function renderUnderstanding(d) {
+  const pane = $('pane-understand');
+  const chips = (d.style_keywords || []).map(k => `<span class="chip">${_escapeHtml(k)}</span>`).join('');
+  const swatches = (d.dominant_colors || []).map(c =>
+    `<span class="swatch" style="background:${_escapeHtml(c)}" title="${_escapeHtml(c)}"></span>`
+  ).join('');
+  const elems = (d.key_elements || []).map((e, i) => `
+    <div class="und-elem" data-und-idx="${i}">
+      <div class="row">
+        <span class="tag" style="background:var(--accent);color:#fff">${_escapeHtml(e.kind)}</span>
+        ${e.location ? `<span class="conf">≈ [${e.location.map(v=>(+v).toFixed(2)).join(', ')}]</span>` : '<span class="conf">无定位</span>'}
+      </div>
+      <div class="desc">${_escapeHtml(e.description)}</div>
+    </div>`).join('');
+
+  const lowConf = (d.category_confidence || 0) < 0.4;
+  pane.innerHTML = `
+    <div class="und-hero">
+      <div class="und-cat">
+        ${_escapeHtml(d.category || '未知')}
+        <span class="und-conf ${_confClass(d.category_confidence || 0)}">
+          ${Math.round((d.category_confidence || 0) * 100)}%
+        </span>
+      </div>
+      <div class="und-summary">${_escapeHtml(d.summary || '')}</div>
+      <div class="und-meta">约 ${d.panel_count_estimate || 1} 个面板 · ${_escapeHtml(d.model || '')}</div>
+      ${lowConf ? '<div class="und-meta" style="color:var(--warn)">⚠ 置信度低，VLM 可能没看懂</div>' : ''}
+    </div>
+    ${chips ? `<div class="und-section"><h5>风格关键词</h5><div class="und-chips">${chips}</div></div>` : ''}
+    ${swatches ? `<div class="und-section"><h5>主色调</h5><div class="swatch-row">${swatches}</div></div>` : ''}
+    ${elems ? `<div class="und-section"><h5>关键元素 (${d.key_elements.length})</h5>${elems}</div>` : ''}
+    ${d.raw_note ? `<div class="und-section"><h5>VLM 原始输出（解析降级）</h5><div class="und-raw">${_escapeHtml(d.raw_note)}</div></div>` : ''}
+  `;
+  // Switch to the understand tab so the user sees the result.
+  document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+  document.querySelector('.tab[data-tab=understand]').classList.add('active');
+  document.querySelectorAll('.pane').forEach(p => p.classList.remove('active'));
+  $('pane-understand').classList.add('active');
+  // Also refresh the JSON dump.
+  $('jsonOut').textContent = JSON.stringify(d, null, 2);
+  // Draw the element boxes on the image + wire hover sync between cards and boxes.
+  drawUnderstandingOverlay();
+  pane.querySelectorAll('.und-elem[data-und-idx]').forEach(card => {
+    const idx = +card.dataset.undIdx;
+    card.addEventListener('mouseenter', () => { view.activeUndIdx = idx; drawUnderstandingOverlay(); });
+    card.addEventListener('mouseleave', () => { view.activeUndIdx = -1; drawUnderstandingOverlay(); });
+  });
+}
+
+// =========================================================================
 // upload + recognize flow
 // =========================================================================
 let currentFile = null;
@@ -733,11 +1373,15 @@ function handleFile(file) {
   currentObjectUrl = URL.createObjectURL(file);
   $('filename').textContent = '📎 ' + file.name + ` (${(file.size/1024).toFixed(0)} KB)`;
   // Show image immediately, NO recognition yet.
-  view.items = []; view.crop = null; drawPolygons();
+  view.items = []; view.crop = null; view.panels = []; view.candidates = []; view.splitMode = false; view.subject = null;
+  $('splitToolbar').style.display = 'none';
+  drawPolygons();
   showImage(currentObjectUrl);
   // enable recognize button, reset results
   $('recognizeBtn').disabled = false;
   $('previewCropBtn').disabled = false;
+  $('splitPanelsBtn').disabled = false;
+  $('understandBtn').disabled = false;
   $('clearBtn').disabled = false;
   $('count').textContent = '';
   $('itemsPlaceholder').textContent = '点击「识别」开始';
@@ -752,16 +1396,22 @@ $('clearBtn').addEventListener('click', clearAll);
 function clearAll() {
   currentFile = null;
   if (currentObjectUrl) { URL.revokeObjectURL(currentObjectUrl); currentObjectUrl = null; }
-  view.items = []; view.crop = null; drawPolygons();
+  view.items = []; view.crop = null; view.panels = []; view.understanding = null;
+  view.candidates = []; view.splitMode = false; view.subject = null;
+  $('splitToolbar').style.display = 'none';
+  drawPolygons();
   $('emptyHint').style.display = 'flex';
   canvas.style.display = 'none';
   $('hud').style.display = 'none'; $('hint').style.display = 'none';
   $('filename').textContent = '';
   $('recognizeBtn').disabled = true;
   $('previewCropBtn').disabled = true;
+  $('splitPanelsBtn').disabled = true;
+  $('understandBtn').disabled = true;
   $('clearBtn').disabled = true;
   $('count').textContent = '';
   $('itemsPlaceholder').textContent = '上传图片后点击「识别」';
+  $('understandPlaceholder').textContent = '上传图片后点击「✦ AI 理解」，让 VLM 看懂这张图';
   $('jsonOut').textContent = ''; $('meta').textContent = '';
   $('cropModal').classList.remove('show');
   setStatus('','');
@@ -856,6 +1506,7 @@ document.querySelectorAll('.tab').forEach(t=>{
 // init
 syncParamUI();
 syncCropUI();
+loadVlmConfig();   // populate the VLM config panel from .env (key masked)
 </script>
 </body>
 </html>

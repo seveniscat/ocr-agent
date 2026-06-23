@@ -6,6 +6,7 @@ Prefix is ``OCR_`` to avoid clashing with system env vars.
 from __future__ import annotations
 
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal
 
 from pydantic import Field
@@ -13,10 +14,16 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 Granularity = Literal["word", "line", "paragraph"]
 
+# Canonical project .env location (project root = parent of app/). config reads
+# from here and envstore writes to here, so edits made via the UI /config/vlm
+# endpoint are guaranteed to be picked up on the next settings read, regardless
+# of the process's CWD.
+ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env", env_prefix="OCR_", extra="ignore"
+        env_file=str(ENV_PATH), env_prefix="OCR_", extra="ignore"
     )
 
     # ---- Tiling ----
@@ -82,11 +89,43 @@ class Settings(BaseSettings):
     )
 
     # ---- VLM fallback ----
+    # NOTE: model defaults to qwen3.7-plus — qwen-vl-max / qwen-vl-plus are
+    # scheduled for deprecation on 2026-07-13 (DashScope notice 118178). The
+    # OpenAI-compatible endpoint and our code are unchanged; only the model
+    # name moved. Qwen3.x supports an optional "thinking" mode (deep reasoning
+    # before answering) — useful for future QA reasoning, but disabled by
+    # default because it can't combine with response_format=json_object.
     vlm_enabled: bool = True
     vlm_provider: str = "qwen"
     vlm_api_key: str = ""
     vlm_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-    vlm_model: str = "qwen-vl-max"
+    vlm_model: str = "qwen3.7-plus"
+    vlm_enable_thinking: bool = Field(
+        False,
+        description="Enable Qwen3.x thinking mode (deep reasoning before the "
+                    "answer). Off by default: thinking mode is incompatible with "
+                    "response_format=json_object, so JSON output relies on our "
+                    "tolerant parser instead. Turn on for QA-reasoning tasks.",
+    )
+
+    # ---- AI Native understanding layer (``POST /understand``) ----
+    # Reuses OCR_VLM_* for the provider/key/url/model — no separate VLM creds.
+    # The understanding layer is the first AI-Native capability: the VLM looks
+    # at the whole image and answers "what is this" instead of just recognizing
+    # art text. Level-1 = one whole-image call; per-panel calls are a future
+    # extension (level 2).
+    understand_enabled: bool = Field(
+        True,
+        description="Toggle the AI understanding layer (POST /understand). "
+                    "Disable if you don't want any whole-image VLM calls.",
+    )
+    understand_max_side: int = Field(
+        1080, ge=256, le=4096,
+        description="Long-edge px the image is downscaled to before asking the "
+                    "VLM. Dielines run 1000-10000px but VLMs effectively resolve "
+                    "~2Kpx; for whole-image 'what is this' understanding a single "
+                    "downscale is enough. Larger → sharper but more tokens.",
+    )
 
     # ---- Preprocessing (die-line auto-crop) ----
     preprocess_autocrop: bool = Field(
