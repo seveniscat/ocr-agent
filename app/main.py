@@ -12,7 +12,15 @@ from __future__ import annotations
 import uuid
 from pathlib import Path
 
-from fastapi import BackgroundTasks, FastAPI, File, Form, Query, UploadFile
+from fastapi import (
+    BackgroundTasks,
+    FastAPI,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    UploadFile,
+)
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -25,7 +33,6 @@ from .schemas import (
     ComputePanelsRequest,
     ComputePanelsResponse,
     PanelsResponse,
-    PreprocessResponse,
     TaskStatus,
     UnderstandingResult,
     VlmPanelsResponse,
@@ -77,6 +84,39 @@ def _get_pipeline_existing() -> "Pipeline | None":
 @app.get("/healthz")
 def healthz() -> dict:
     return {"status": "ok", "version": app.version}
+
+
+async def _resolve_image(
+    file: UploadFile | None, url: str | None
+) -> bytes:
+    """Resolve the image input to bytes, supporting both upload and URL.
+
+    Every image endpoint accepts either a multipart ``file`` OR a ``url`` form
+    field (file wins when both are given — backward compatible). The returned
+    bytes feed straight into the existing pipeline, which already decodes bytes
+    (``tiling.load_image`` / ``Pipeline.run`` / ``Image.open``).
+
+    Raises HTTPException(400) when neither input is provided or the URL fetch
+    fails (network error, non-2xx, size limit) — surfaced as a client error so
+    callers can retry/fix the URL instead of seeing an opaque 500.
+    """
+    if file is not None:
+        return await file.read()
+    if url:
+        from .fetch import FetchError, fetch_image
+
+        s = _settings()
+        try:
+            return await fetch_image(
+                url,
+                timeout=s.url_fetch_timeout,
+                max_bytes=s.url_fetch_max_bytes,
+            )
+        except FetchError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    raise HTTPException(
+        status_code=400, detail="provide an image via 'file' or 'url'"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -168,7 +208,8 @@ def save_vlm_config(body: VLMConfigUpdate) -> JSONResponse:
 @app.post("/analyze", response_model=AnalyzeResponse)
 async def analyze(
     background_tasks: BackgroundTasks,
-    file: UploadFile = File(...),
+    file: UploadFile | None = File(None, description="Image upload (mutually exclusive with 'url')."),
+    url: str | None = Form(None, description="Image URL to download (used when 'file' is absent)."),
     annotate: bool = Query(False, description="Include annotated image in response"),
     options: str | None = Form(
         None,
@@ -178,7 +219,7 @@ async def analyze(
     ),
 ) -> JSONResponse:
     settings = _settings()
-    data = await file.read()
+    data = await _resolve_image(file, url)
 
     # Parse optional OCR overrides.
     opt_obj = _parse_options(options)
@@ -241,63 +282,6 @@ def _parse_options(raw: str | None) -> "OCROptions | None":
     return OCROptions(**obj) if obj else None
 
 
-@app.post("/preprocess", response_model=PreprocessResponse)
-async def preprocess(
-    file: UploadFile = File(...),
-    threshold: int = Query(
-        240, ge=0, le=255,
-        description="Grayscale cutoff for 'ink' pixels; < this = content.",
-    ),
-    padding: int = Query(
-        0, ge=0, le=500,
-        description="Extra margin (px) kept on every side after cropping.",
-    ),
-) -> JSONResponse:
-    """Preview the die-line auto-crop WITHOUT running OCR.
-
-    Returns the original size, the crop box (original-image coords), and a
-    base64 PNG of the cropped region so the UI can show a side-by-side.
-    """
-    import base64
-    import io
-
-    from PIL import Image
-
-    from .preprocess import autocrop
-
-    data = await file.read()
-    img = Image.open(io.BytesIO(data)).convert("RGB")
-    import numpy as np
-
-    arr = np.array(img)
-    h, w = arr.shape[:2]
-
-    cropped, crop_box = autocrop(arr, threshold=threshold, padding=padding)
-
-    removed = 0.0
-    cw, ch = w, h
-    cropped_b64 = None
-    if crop_box is not None:
-        ch, cw = cropped.shape[:2]
-        removed = 1.0 - (cw * ch) / (w * h)
-        buf = io.BytesIO()
-        Image.fromarray(cropped).save(buf, format="PNG")
-        cropped_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
-
-    return JSONResponse(
-        status_code=200,
-        content=PreprocessResponse(
-            width=w,
-            height=h,
-            crop=crop_box,
-            cropped_width=cw if crop_box else None,
-            cropped_height=ch if crop_box else None,
-            cropped_image_b64=cropped_b64,
-            removed_ratio=removed,
-        ).model_dump(),
-    )
-
-
 @app.get("/tasks/{task_id}", response_model=TaskStatus)
 def get_task(task_id: str) -> JSONResponse:
     task = _tasks.get(task_id)
@@ -307,7 +291,10 @@ def get_task(task_id: str) -> JSONResponse:
 
 
 @app.post("/understand", response_model=UnderstandingResult)
-async def understand(file: UploadFile = File(...)) -> JSONResponse:
+async def understand(
+    file: UploadFile | None = File(None, description="Image upload (mutually exclusive with 'url')."),
+    url: str | None = Form(None, description="Image URL to download (used when 'file' is absent)."),
+) -> JSONResponse:
     """AI-Native whole-image understanding: the VLM answers "what is this".
 
     A standalone branch that does NOT run OCR — it downscales the image to the
@@ -333,9 +320,39 @@ async def understand(file: UploadFile = File(...)) -> JSONResponse:
             content={"detail": "VLM disabled (OCR_VLM_ENABLED=false); understanding needs a VLM"},
         )
 
-    data = await file.read()
+    data = await _resolve_image(file, url)
     vlm = _get_understand_vlm()
     result = understand_image(data, vlm=vlm, settings=settings)
+    return JSONResponse(status_code=200, content=result.model_dump())
+
+
+@app.post("/agent/understand")
+async def agent_understand(
+    file: UploadFile | None = File(None, description="Image upload (mutually exclusive with 'url')."),
+    url: str | None = Form(None, description="Image URL to download (used when 'file' is absent)."),
+) -> JSONResponse:
+    """AI-Native agent understanding: qwen3-max reasons + calls VLM/OCR tools.
+
+    The brain (text-only) inspects the image through ``look``/``ocr_text``/
+    ``describe`` tools over a ReAct loop, then emits a structured conclusion
+    plus the full reasoning trace. Unlike the single-shot ``/understand``, the
+    agent targets specific regions per question, so complex packaging images are
+    understood accurately instead of guessed at once.
+
+    Always returns an :class:`AgentResult`; on agent failure it degrades to an
+    error conclusion (``fallback=True``) rather than 500.
+    """
+    from .agent.core import run_agent
+
+    settings = _settings()
+    if not settings.vlm_enabled:
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "VLM disabled (OCR_VLM_ENABLED=false); agent needs a VLM + reasoning LLM"},
+        )
+
+    data = await _resolve_image(file, url)
+    result = run_agent(data, settings=settings, pipeline=_get_pipeline())
     return JSONResponse(status_code=200, content=result.model_dump())
 
 
@@ -346,8 +363,6 @@ def _get_understand_vlm():
     ``Pipeline._get_vlm()`` raises if the provider isn't ask_image-capable or
     the key is unset; we surface that as a 503-style message instead of a 500.
     """
-    from fastapi import HTTPException
-
     pipeline = _get_pipeline()
     try:
         return pipeline._get_vlm()  # noqa: SLF001 — reuse the lazy loader by design
@@ -363,7 +378,8 @@ def _get_understand_vlm():
 
 @app.post("/panels", response_model=PanelsResponse)
 async def split_into_panels(
-    file: UploadFile = File(...),
+    file: UploadFile | None = File(None, description="Image upload (mutually exclusive with 'url')."),
+    url: str | None = Form(None, description="Image URL to download (used when 'file' is absent)."),
     preview: bool = Query(
         True, description="Include base64 PNG crops of each panel.",
     ),
@@ -387,7 +403,7 @@ async def split_into_panels(
 
     from .panels import split_panels_auto
 
-    data = await file.read()
+    data = await _resolve_image(file, url)
     img = Image.open(_io.BytesIO(data))
     w, h = img.size
 
@@ -416,29 +432,32 @@ async def split_into_panels(
 
 @app.post("/panels/vlm", response_model=VlmPanelsResponse)
 async def split_panels_with_vlm(
-    file: UploadFile = File(...),
+    file: UploadFile | None = File(None, description="Image upload (mutually exclusive with 'url')."),
+    url: str | None = Form(None, description="Image URL to download (used when 'file' is absent)."),
     preview: bool = Query(
         True, description="Include base64 PNG crops of each panel.",
     ),
+    max_side: int | None = Query(
+        None, ge=128, le=2048,
+        description="Override the VLM image downscale long edge (default: OCR_PANELS_VLM_MAX_SIDE=512).",
+    ),
 ) -> JSONResponse:
-    """Split a die-line into faces using the VLM (semantic layout recognition).
+    """Detect die-line CUT LINES via the VLM and return them as editable lines.
 
-    Unlike the geometry-based ``/panels`` (which fails on finished design
-    drafts), this asks the VLM to identify each box face directly. The VLM
-    returns normalized bboxes; we scale them back to original-image pixels and,
-    optionally, render PNG crops.
+    The VLM looks at a downscaled image (512px by default — cut lines are a
+    low-detail task) and returns horizontal y-coords and vertical x-coords
+    separating the box faces, in original-image pixel coords. The UI then lets
+    the user drag each line into exact position before confirming via
+    /panels/compute. ``lines`` (not ``panels``) carries the result; ``panels``
+    is kept empty for response-model compatibility.
 
     Always returns 200 — VLM/parse failures surface as ``error`` + empty
-    ``panels`` rather than an HTTP error, so the UI can show a message.
+    ``lines`` rather than an HTTP error.
     """
-    import io as _io
-
-    from PIL import Image
-
-    from .understanding import split_panels_vlm
+    from .understanding import detect_cut_lines
 
     settings = _settings()
-    data = await file.read()
+    data = await _resolve_image(file, url)
 
     # Gate: VLM must be enabled and a key set.
     if not settings.vlm_enabled:
@@ -461,37 +480,28 @@ async def split_panels_with_vlm(
             ).model_dump(),
         )
 
-    result = split_panels_vlm(data, vlm=vlm, settings=settings)
+    result = detect_cut_lines(data, vlm=vlm, settings=settings, max_side=max_side)
 
-    # Optionally render PNG crops from the original image.
-    if preview and result["panels"]:
-        import base64
-
-        try:
-            src = Image.open(_io.BytesIO(data)).convert("RGB")
-            for p in result["panels"]:
-                buf = _io.BytesIO()
-                src.crop(tuple(p["bbox"])).save(buf, format="PNG")
-                p["image_b64"] = base64.b64encode(buf.getvalue()).decode("ascii")
-        except Exception:  # noqa: BLE001 — crops are best-effort
-            pass
-
-    return JSONResponse(
-        status_code=200,
-        content=VlmPanelsResponse(
-            width=result["width"],
-            height=result["height"],
-            count=result["count"],
-            panels=result["panels"],
-            model=result.get("model", ""),
-            error=result.get("error"),
-        ).model_dump(),
-    )
+    # Build the response. VlmPanelsResponse requires `panels`; we emit an empty
+    # list (the UI consumes `lines`, added as an extra field below). Per-panel
+    # PNG crops are produced by /panels/compute after the user confirms the cut
+    # lines, so `preview` has no per-panel image to render at this stage.
+    resp = VlmPanelsResponse(
+        width=result["width"],
+        height=result["height"],
+        count=result["count"],
+        panels=[],
+        model=result.get("model", ""),
+        error=result.get("error"),
+    ).model_dump()
+    resp["lines"] = result["lines"]
+    return JSONResponse(status_code=200, content=resp)
 
 
 @app.post("/panels/candidates", response_model=CandidatesResponse)
 async def panel_candidates(
-    file: UploadFile = File(...),
+    file: UploadFile | None = File(None, description="Image upload (mutually exclusive with 'url')."),
+    url: str | None = Form(None, description="Image URL to download (used when 'file' is absent)."),
     high_pct: float = Query(
         95.0, ge=50.0, le=99.9,
         description="Projection percentile for HIGH confidence (pre-selected). "
@@ -518,7 +528,7 @@ async def panel_candidates(
 
     from .panels import detect_candidate_lines
 
-    data = await file.read()
+    data = await _resolve_image(file, url)
     img = Image.open(_io.BytesIO(data))
     res = detect_candidate_lines(
         img, high_pct=high_pct, mid_pct=mid_pct, low_pct=low_pct,
@@ -560,13 +570,16 @@ async def compute_panels_endpoint(
     file: UploadFile | None = File(
         None, description="Optional image; when present each panel gets a PNG crop."
     ),
+    url: str | None = Form(
+        None, description="Optional image URL; used for PNG crops when 'file' is absent."
+    ),
 ) -> JSONResponse:
     """Compute panel rectangles from user-confirmed cut lines.
 
-    Pure geometry (no image processing). When ``file`` is supplied, each panel
-    includes a base64 PNG crop; otherwise only bboxes are returned. ``h_lines``
-    and ``v_lines`` are JSON-encoded int arrays (the UI sends them as form
-    fields alongside the optional image upload).
+    Pure geometry (no image processing). When ``file`` or ``url`` is supplied,
+    each panel includes a base64 PNG crop; otherwise only bboxes are returned.
+    ``h_lines`` and ``v_lines`` are JSON-encoded int arrays (the UI sends them
+    as form fields alongside the optional image upload).
     """
     import base64
     import io as _io
@@ -580,11 +593,13 @@ async def compute_panels_endpoint(
     vs = json.loads(v_lines) if v_lines else []
     panels = compute_panels(hs, vs, width, height)
 
-    # Optional: render PNG crops for each panel from the uploaded source image.
+    # Optional: render PNG crops for each panel from the source image. Accepts
+    # either a multipart file or a URL (file wins); both absent → bbox-only,
+    # matching the original optional-file behavior.
     source_img = None
-    if file is not None:
-        data = await file.read()
+    if file is not None or url:
         try:
+            data = await _resolve_image(file, url)
             source_img = Image.open(_io.BytesIO(data)).convert("RGB")
         except Exception:  # noqa: BLE001 — best-effort crop
             source_img = None

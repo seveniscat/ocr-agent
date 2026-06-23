@@ -127,6 +127,44 @@ class Settings(BaseSettings):
                     "downscale is enough. Larger → sharper but more tokens.",
     )
 
+    # ---- AI Native agent layer (``POST /agent/understand``) ----
+    # The agent is qwen3-max (reasoning brain, text-only, function calling) +
+    # VLM/OCR as tools it calls. The brain never sees pixels directly — it
+    # learns about the image through tool outputs (text descriptions). This
+    # multi-round, targeted inspection beats a single-shot VLM call for complex
+    # packaging images (the cause of the earlier "荒诞不准确" results).
+    agent_llm_model: str = Field(
+        "qwen3-max",
+        description="Reasoning brain model (text-only, must support function "
+                    "calling on the OpenAI-compatible DashScope endpoint).",
+    )
+    agent_vlm_model: str = Field(
+        "qwen3.7-plus",
+        description="Vision model used by the look/describe tools (the agent's "
+                    "'eyes'). Separate from vlm_model so the agent can pin a "
+                    "known-good vision model independently of the art-text "
+                    "fallback path.",
+    )
+    agent_max_rounds: int = Field(
+        8, ge=1, le=30,
+        description="Max ReAct loop iterations. Prevents runaway loops; on "
+                    "exhaustion the model is forced to conclude with what it has.",
+    )
+    agent_look_max_side: int = Field(
+        1080, ge=256, le=4096,
+        description="Long-edge px the look/describe tools downscale crops to "
+                    "before asking the VLM.",
+    )
+
+    # ---- Panel splitting (VLM cut-line detection) ----
+    panels_vlm_max_side: int = Field(
+        512, ge=128, le=2048,
+        description="Long-edge px the image is downscaled to before the VLM "
+                    "looks for cut lines. Cut lines are a low-detail task (just "
+                    "outlines), so 512 is enough and saves tokens vs. the "
+                    "understanding layer's 1080.",
+    )
+
     # ---- Preprocessing (die-line auto-crop) ----
     preprocess_autocrop: bool = Field(
         True,
@@ -151,6 +189,21 @@ class Settings(BaseSettings):
     # ---- Async ----
     large_image_threshold: int = Field(
         4000, description="Long edge above this => async processing"
+    )
+
+    # ---- URL input (``url`` form field on every image endpoint) ----
+    # Endpoints accept either a multipart ``file`` or a ``url`` form field.
+    # These knobs bound the URL fetch so a slow/huge URL can't hang or OOM the
+    # service. No SSRF guard — callers are trusted internal systems; add an
+    # allow-host check in app/fetch.py if this service is ever exposed publicly.
+    url_fetch_timeout: float = Field(
+        30.0, gt=0,
+        description="Connect/read timeout (seconds) for downloading a URL image.",
+    )
+    url_fetch_max_bytes: int = Field(
+        104_857_600, gt=0,
+        description="Abort the URL download once the body exceeds this size "
+                    "(100MB default — die-line images can be large).",
     )
 
     # ---- Annotator ----

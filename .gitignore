@@ -37,3 +37,8 @@ samples/*.jpg
 samples/*.jpeg
 samples/*.webp
 /tmp/
+
+# Runtime artifacts (make up / make clean produce these)
+.uvicorn.pid
+ocr.log
+annotated.png

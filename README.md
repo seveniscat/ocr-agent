@@ -45,6 +45,7 @@ cp .env.example .env
 
 # 4. Run
 uvicorn app.main:app --reload --port 8000
+#   → 或用封装好的 make 命令(见下文"运维命令"):`make up`
 ```
 
 ### Use it
@@ -62,6 +63,19 @@ curl http://localhost:8000/tasks/<task_id>
 
 # AI-Native understanding: "what is this image?" (one whole-image VLM call)
 curl -F "file=@sample.png" http://localhost:8000/understand | jq
+```
+
+### Image input: file upload OR URL
+
+Every image endpoint accepts either a multipart `file` **or** a `url` form
+field (file wins when both are given — backward compatible). Use `url` to
+avoid downloading + re-uploading when the image already lives on an internal
+image store / CDN.
+
+```bash
+# Pass an image URL instead of uploading
+curl -F "url=http://内网图床/sample.png" http://localhost:8000/analyze
+curl -F "url=http://内网图床/sample.png" "http://localhost:8000/analyze?annotate=1"
 ```
 
 ### Response shape (OCR)
@@ -103,6 +117,44 @@ curl -F "file=@sample.png" http://localhost:8000/understand | jq
 }
 ```
 
+## 运维命令(`make`)
+
+项目根目录的 `Makefile` 封装了常用运维操作,降低记忆负担。`make`(或 `make help`)列出全部命令。
+
+```bash
+make up          # 启动服务(对外监听 0.0.0.0:8000,后台常驻,关终端不掉)
+make dev-up      # 开发模式(--reload 热重载,改 app/ 自动重启;前台运行)
+make down        # 停止服务(--reload 的进程树也能彻底杀干净)
+make restart     # 重启(down + up)
+make status      # 查看进程 + 监听端口
+make health      # 健康检查(本机 + 内网 IP)
+make log         # 实时跟踪日志(Ctrl+C 退出)
+make docs        # 浏览器打开 /docs 交互式文档
+make pytest      # 跑测试套件
+make clean       # 停服务 + 清日志/缓存
+```
+
+一键验证(启动后用图片 URL 跑一遍 OCR):
+
+```bash
+make test URL=https://你的图.png          # file 或 url 二选一
+make test FILE=samples/xxx.jpeg
+make annotate URL=https://你的图.png OUT=out.png   # 生成带标注框的图
+make understand URL=https://你的图.png             # AI 理解"这张图是什么"
+```
+
+`make test` 会打印精简汇总(图片尺寸、按类型计数、每项的文字+bbox):
+
+```
+图片 849×831  |  识别 4 项
+类型分布:text=4
+------------------------------------------------------------
+  [text     ] MARVEL                         [498,383,664,444]
+  [text     ] VERSION                        [153,400,514,532]
+```
+
+常用变量(命令行覆盖):`HOST`(默认 `0.0.0.0`)、`PORT`(默认 `8000`)、`URL` / `FILE`(测试用图片)、`OUT`(标注图文件名)。
+
 ## Configuration (`.env`)
 
 | Var | Default | Meaning |
@@ -120,6 +172,8 @@ curl -F "file=@sample.png" http://localhost:8000/understand | jq
 | `OCR_UNDERSTAND_ENABLED` | `true` | Toggle the AI understanding layer (`/understand`) |
 | `OCR_UNDERSTAND_MAX_SIDE` | `1080` | Long edge (px) image is downscaled to before the VLM |
 | `OCR_LARGE_IMAGE_THRESHOLD` | `4000` | Long edge above → async (202) |
+| `OCR_URL_FETCH_TIMEOUT` | `30` | URL download connect/read timeout (seconds) |
+| `OCR_URL_FETCH_MAX_BYTES` | `104857600` | Abort URL download once body exceeds this (100MB) |
 
 ## Tests
 
@@ -136,13 +190,14 @@ pytest -q          # tiling geometry + API smoke; no paddle/pyzbar needed
 
 ```
 app/
-  main.py          FastAPI routes (POST /analyze, /understand, /panels, /preprocess, GET /tasks/{id}, /healthz)
+  main.py          FastAPI routes (POST /analyze, /understand, /panels, /panels/vlm, /panels/candidates, /panels/compute, /agent/understand, GET /tasks/{id}, /healthz)
   pipeline.py      Orchestrator: tiles → OCR → codes → VLM → dedupe → annotate
   understanding.py AI-Native understanding layer: VLM "what is this" (level 1)
   tiling.py        Grid planning, coordinate remap, IoU NMS, dedupe
   panels.py        Die-line → main box-face panels (LSD long-line detection)
   preprocess.py    Die-line blank-margin auto-crop
   config.py        pydantic-settings (.env-driven)
+  fetch.py         Download `url` form field → bytes (streamed + size-capped)
   schemas.py       API I/O models
   ocr/             PaddleOCR wrapper (detector + recognizer + aggregator)
   codes/           pyzbar QR/barcode
