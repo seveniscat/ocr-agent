@@ -32,6 +32,31 @@ class VLMProvider(abc.ABC):
         """Read text inside ``polygon`` (in ``image`` coords)."""
         raise NotImplementedError
 
+    def recognize_crops_batch(
+        self, image: "np.ndarray", polygons: list[list[list[float]]]
+    ) -> list[tuple[str, float]]:
+        """Recognize text in multiple crops concurrently.
+
+        Default implementation dispatches ``recognize_crop`` calls across a
+        thread pool so N independent cloud round-trips overlap instead of
+        waiting on each other. Returns one ``(text, confidence)`` per input
+        polygon, in order. Providers MAY override with a true multi-image
+        single-request path — but for VLM art-text fallback, concurrency wins
+        in practice (a multi-image request forces serial cross-image attention
+        server-side and is often slower than parallel single-image calls).
+        """
+        import concurrent.futures as cf
+
+        if not polygons:
+            return []
+        # Each call is I/O-bound (waiting on the cloud API), so a thread pool
+        # is the right tool. 8 workers balances throughput against rate limits.
+        with cf.ThreadPoolExecutor(max_workers=8) as pool:
+            futures = [
+                pool.submit(self.recognize_crop, image, poly) for poly in polygons
+            ]
+            return [f.result() for f in futures]
+
     def ask_image(
         self,
         image_b64_data_url: str,

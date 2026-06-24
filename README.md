@@ -65,6 +65,8 @@ curl http://localhost:8000/tasks/<task_id>
 curl -F "file=@sample.png" http://localhost:8000/understand | jq
 ```
 
+> 📄 **第三方接入**:完整接口说明见 [`docs/API.md`](docs/API.md)(端点、参数、响应结构、Python 示例、错误码、坐标约定)。
+
 ### Image input: file upload OR URL
 
 Every image endpoint accepts either a multipart `file` **or** a `url` form

@@ -9,7 +9,11 @@ Run locally: ``uvicorn app.main:app --reload``
 """
 from __future__ import annotations
 
+import asyncio
+import logging
+import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from fastapi import (
@@ -39,6 +43,25 @@ from .schemas import (
 )
 
 app = FastAPI(title="ocr-agent", version="0.1.0")
+
+logger = logging.getLogger(__name__)
+
+# Wire the business loggers (app.*) into uvicorn's output. Without this their
+# INFO/WARNING records are dropped (no handler attached) — which is why none of
+# the pipeline/OCR/VLM timing logs showed up even though they were emitted.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+
+# Dedicated thread pool for large-image OCR. pipeline.run() is a heavy
+# SYNCHRONOUS call (CPU + serial cloud VLM calls); running it on FastAPI's
+# BackgroundTasks would block the single event-loop thread and stall EVERY
+# request — including the trivial GET /tasks/{id} poll. Offloading to a real
+# OS thread keeps the event loop free to answer polls while OCR grinds away.
+# max_workers=2: OCR is CPU/memory-bound; more workers risk OOM and CPU
+# contention on big die-line tiles. Bump if you have the headroom.
+_ocr_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="ocr-worker")
 
 # Serve the embedded web UI assets at /static/*.
 _STATIC_DIR = Path(__file__).parent / "static"
@@ -219,6 +242,9 @@ async def analyze(
     ),
 ) -> JSONResponse:
     settings = _settings()
+    # source label for logs: which input path the caller used.
+    src = f"url={url}" if url else (f"file={file.filename}" if file else "none")
+    t_start = time.perf_counter()
     data = await _resolve_image(file, url)
 
     # Parse optional OCR overrides.
@@ -231,27 +257,53 @@ async def analyze(
     long_edge = max(w, h)
 
     if long_edge <= settings.large_image_threshold:
-        # Synchronous path (small/medium images).
+        # Synchronous path (small/medium images). Run in the thread pool so the
+        # (synchronous, CPU-heavy) pipeline.run() doesn't block the event loop
+        # either — even "small" images can take a couple seconds.
         pipeline = _get_pipeline()
-        resp = pipeline.run(data, annotate=annotate, options=opt_obj)
+        loop = asyncio.get_event_loop()
+        resp = await loop.run_in_executor(
+            _ocr_executor, lambda: pipeline.run(data, annotate=annotate, options=opt_obj)
+        )
+        logger.info(
+            "/analyze sync %dx%d %s items=%d %.2fs",
+            w, h, src, len(resp.items), time.perf_counter() - t_start,
+        )
         return JSONResponse(status_code=200, content=resp.model_dump())
 
-    # Async path (large images).
+    # Async path (large images). Offload to the thread pool — NOT
+    # BackgroundTasks — so the event loop stays free to answer /tasks polls
+    # while OCR grinds. The 202 + task_id contract is unchanged.
     task_id = uuid.uuid4().hex
     _tasks[task_id] = TaskStatus(task_id=task_id, status="pending")
 
     def _run():
+        t = time.perf_counter()
         try:
             _tasks[task_id].status = "running"
             pipeline = _get_pipeline()
             resp = pipeline.run(data, annotate=annotate, options=opt_obj)
             _tasks[task_id].result = resp
             _tasks[task_id].status = "done"
+            logger.info(
+                "/analyze async task=%s %dx%d %s items=%d done in %.2fs",
+                task_id, w, h, src, len(resp.items), time.perf_counter() - t,
+            )
         except Exception as exc:  # noqa: BLE001 — surface to caller
             _tasks[task_id].status = "error"
             _tasks[task_id].error = f"{type(exc).__name__}: {exc}"
+            logger.warning(
+                "/analyze async task=%s failed in %.2fs: %s",
+                task_id, time.perf_counter() - t, exc,
+            )
 
-    background_tasks.add_task(_run)
+    # Fire-and-forget on the pool; the response returns immediately with 202.
+    loop = asyncio.get_event_loop()
+    loop.run_in_executor(_ocr_executor, _run)
+    logger.info(
+        "/analyze async accepted task=%s %dx%d %s",
+        task_id, w, h, src,
+    )
     return JSONResponse(
         status_code=202,
         content=AnalyzeResponse(

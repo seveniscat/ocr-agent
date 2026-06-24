@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import base64
 import logging
+import time
 
 from .config import Settings
 from .schemas import AnalyzeResponse, ImageMeta, Item, OCROptions
@@ -108,14 +109,17 @@ class Pipeline:
         annotate: bool = False,
         options: "OCROptions | None" = None,
     ) -> AnalyzeResponse:
+        t0 = time.perf_counter()
         img = load_image(image_data)
         h, w = img.shape[:2]
+        orig_w, orig_h = w, h  # before autocrop, for the log
 
         # --- Preprocess: crop blank margins around the die-line artwork. ---
         # The cropped image becomes the working image for everything below, so
         # all item coordinates are naturally in cropped space; the one `crop`
         # offset is echoed back in image_meta for callers to remap to the
         # original. Blank image → no crop, fall through unchanged.
+        t_pre = time.perf_counter()
         crop_box = None
         if self.settings.preprocess_autocrop:
             from .preprocess import autocrop
@@ -126,6 +130,7 @@ class Pipeline:
                 padding=self.settings.preprocess_autocrop_padding,
             )
             h, w = img.shape[:2]
+        t_pre = time.perf_counter() - t_pre
 
         grid = plan_grid(
             w, h,
@@ -148,7 +153,8 @@ class Pipeline:
         else:
             predict_kwargs, gran, gap, xov = {}, None, None, None
 
-        # Per-tile processing.
+        # Per-tile processing (the dominant cost on large images).
+        t_ocr = time.perf_counter()
         for spec in specs:
             tile = crop_tile(img, spec)
 
@@ -206,13 +212,30 @@ class Pipeline:
                         "Code detection failed on tile %d, skipping: %s",
                         spec.index, exc,
                     )
+        t_ocr = time.perf_counter() - t_ocr
+        n_after_ocr = len(all_items)
 
         # --- VLM fallback for low-confidence / suspicious text ---
-        all_items = self._maybe_vlm_fallback(img, all_items)
+        t_vlm, vlm_calls = time.perf_counter(), 0
+        all_items, vlm_calls = self._maybe_vlm_fallback(img, all_items)
+        t_vlm = time.perf_counter() - t_vlm
 
         # --- merge duplicates across tile seams ---
+        t_dedup = time.perf_counter()
         all_items = dedupe_items(all_items)
         all_items = renumber(all_items, prefix="t")
+        t_dedup = time.perf_counter() - t_dedup
+
+        # --- per-stage timing log. vlm_calls is the number of CROPS inspected;
+        # they're sent in ~⌈crops/batch⌉ batched requests (each ~20 crops in
+        # one multi-image call), so wall-clock no longer scales linearly with it. ---
+        t_total = time.perf_counter() - t0
+        logger.info(
+            "pipeline.run: %dx%d→%dx%d tiles=%d items=%d→%d "
+            "preprocess=%.2fs ocr=%.2fs vlm(crops=%d)=%.2fs dedupe=%.2fs total=%.2fs",
+            orig_w, orig_h, w, h, grid.count, n_after_ocr, len(all_items),
+            t_pre, t_ocr, vlm_calls, t_vlm, t_dedup, t_total,
+        )
 
         response = AnalyzeResponse(
             image_meta=ImageMeta(
@@ -222,11 +245,15 @@ class Pipeline:
             options_used=options,
         )
 
+        t_annot = 0.0
         if annotate:
             from .viz.annotator import annotate_image
 
+            t_annot = time.perf_counter()
             annotated = annotate_image(img, all_items, self.settings)
             response.annotated_image_b64 = _b64_png(annotated)
+            t_annot = time.perf_counter() - t_annot
+            logger.info("pipeline.run: annotate=%.2fs", t_annot)
 
         return response
 
@@ -234,41 +261,60 @@ class Pipeline:
 
     def _maybe_vlm_fallback(
         self, img, items: list[Item]
-    ) -> list[Item]:
-        """For text items below the confidence threshold, re-recognize the
-        crop via the VLM. Keeps the original polygon (geometry stays from the
-        expert detector — VLM only supplies the text)."""
+    ) -> tuple[list[Item], int]:
+        """Re-recognize low-confidence text crops via the VLM, in BATCH.
+
+        Collects every text item below the confidence threshold, sends ALL of
+        them to the VLM in as few multi-image calls as possible
+        (``recognize_crops_batch`` packs ~20 crops per request), then writes the
+        recognized text back into the items. Geometry (polygon/bbox) stays from
+        the expert detector — the VLM only supplies text.
+
+        Returns ``(items, n_crops)``: ``n_crops`` is the number of crops sent
+        (not the number of API calls), so the timing log still shows how many
+        suspicious regions were inspected. The actual speedup is in the API
+        call count, which is ~⌈n_crops / batch_size⌉ instead of n_crops.
+        """
         if not self.settings.vlm_enabled:
-            return items
+            return items, 0
         try:
             vlm = self._get_vlm()
         except Exception as exc:  # noqa: BLE001 — VLM is best-effort
             logger.warning("VLM unavailable, skipping fallback: %s", exc)
-            return items
+            return items, 0
 
         threshold = self.settings.rec_confidence_fallback
-        out: list[Item] = []
-        for item in items:
-            if (
-                item.type == "text"
-                and item.source == "paddleocr"
-                and item.confidence < threshold
-            ):
-                try:
-                    new_text, new_conf = vlm.recognize_crop(img, item.polygon)
-                    if new_text:
-                        item = item.model_copy(
-                            update={
-                                "text": new_text,
-                                "confidence": max(item.confidence, new_conf),
-                                "type": "art_text",
-                                "source": "vlm_fallback",
-                            }
-                        )
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("VLM fallback failed for one item: %s", exc)
-            out.append(item)
-        return out
+        # Collect the indices + polygons of every suspect item, then send them
+        # to the VLM in one batched call (the provider chunks internally).
+        suspect_idx = [
+            i for i, it in enumerate(items)
+            if it.type == "text"
+            and it.source == "paddleocr"
+            and it.confidence < threshold
+        ]
+        if not suspect_idx:
+            return items, 0
+
+        suspect_polys = [items[i].polygon for i in suspect_idx]
+        try:
+            recognized = vlm.recognize_crops_batch(img, suspect_polys)
+        except Exception as exc:  # noqa: BLE001 — best-effort; keep originals
+            logger.warning("VLM batch fallback failed, keeping originals: %s", exc)
+            return items, len(suspect_idx)
+
+        # Write the recognized text back into the items (geometry unchanged).
+        out = list(items)
+        for idx, (new_text, new_conf) in zip(suspect_idx, recognized):
+            if new_text:
+                out[idx] = out[idx].model_copy(
+                    update={
+                        "text": new_text,
+                        "confidence": max(out[idx].confidence, new_conf),
+                        "type": "art_text",
+                        "source": "vlm_fallback",
+                    }
+                )
+        return out, len(suspect_idx)
 
 
 def _b64_png(pil_img) -> str:

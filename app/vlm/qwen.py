@@ -67,6 +67,12 @@ class QwenVLM(VLMProvider):
         text = re.sub(r"^['\"]|['\"]$", "", text)
         return text, 0.8
 
+    # NOTE: recognize_crops_batch is inherited from VLMProvider, which dispatches
+    # the per-crop calls across a thread pool (concurrency) rather than packing
+    # them into one multi-image request. Empirically, for art-text fallback on
+    # Qwen-VL, parallel single-image calls beat a multi-image call: the latter
+    # forces serial cross-image attention server-side and is slower overall.
+
     def ask_image(
         self,
         image_b64_data_url: str,
@@ -75,11 +81,16 @@ class QwenVLM(VLMProvider):
         max_tokens: int = 1024,
         json_mode: bool = False,
         enable_thinking: bool | None = None,
+        model_override: str | None = None,
     ) -> tuple[str, float]:
         """Send one image + one prompt to Qwen-VL. Returns ``(raw_text, conf)``.
 
         ``image_b64_data_url`` must be a full ``data:image/...;base64,...`` URL.
         ``json_mode`` sets ``response_format={"type":"json_object"}``.
+
+        ``model_override`` pins a specific model for this call (e.g. the agent
+        uses a separate vision model from the art-text fallback). Falls back to
+        the provider's configured model when None.
 
         Thinking mode (Qwen3.x): when enabled, the model reasons before
         answering (``extra_body={"enable_thinking": True}``). Note thinking mode
@@ -100,7 +111,7 @@ class QwenVLM(VLMProvider):
         use_json = json_mode and not want_thinking
 
         kwargs: dict = {
-            "model": self._model,
+            "model": model_override or self._model,
             "messages": [
                 {
                     "role": "user",
