@@ -140,23 +140,21 @@ class TaskStatus(BaseModel):
     error: Optional[str] = None
 
 
-class PreprocessResponse(BaseModel):
-    """Result of the standalone ``POST /preprocess`` endpoint.
+class WebhookPayload(BaseModel):
+    """Outbound webhook body — a tiny status ping sent to a caller-supplied URL.
 
-    Lets the UI preview the auto-crop *without* running OCR. ``crop`` is the box
-    in **original** coords; ``cropped_image_b64`` is the cropped preview (PNG,
-    base64). When the image is blank / nothing to crop, ``crop`` is null and the
-    returned preview equals the full original.
+    Sent from ``/analyze`` when the request carries ``callback_url``. Carries
+    only status + task_id (+ the caller's ``biz_id``); the receiver pulls the
+    full OCR result via ``GET /tasks/{task_id}``. Constructed in
+    ``app/webhook.build_payload``; this model documents the wire contract.
     """
 
-    width: int                       # original image width (px)
-    height: int                      # original image height (px)
-    crop: Optional[list[int]] = None  # [x0, y0, x1, y1] original coords, or null
-    cropped_width: Optional[int] = None   # cropped preview width
-    cropped_height: Optional[int] = None  # cropped preview height
-    cropped_image_b64: Optional[str] = None
-    # fraction of pixels removed by the crop (0.0 = nothing cropped)
-    removed_ratio: float = 0.0
+    event: Literal["analyze.completed", "analyze.failed"]
+    task_id: str
+    status: Literal["done", "error"]
+    timestamp: str  # ISO-8601 UTC, e.g. "2026-06-24T12:34:56Z"
+    biz_id: Optional[str] = None  # echoed verbatim from the request, when given
+    error: Optional[str] = None    # short message; only set on failure
 
 
 class PanelItem(BaseModel):

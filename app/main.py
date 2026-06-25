@@ -63,6 +63,15 @@ logging.basicConfig(
 # contention on big die-line tiles. Bump if you have the headroom.
 _ocr_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="ocr-worker")
 
+# Dedicated thread pool for outbound webhook delivery. Kept separate from the
+# OCR pool so a slow / hung callback endpoint can never starve an OCR worker —
+# the webhook is fire-and-forget (deliver() never raises), and delivery latency
+# must not gate detection throughput. 4 workers is enough for a handful of
+# concurrent callbacks; bump if you fan out to many business systems at once.
+_webhook_executor = ThreadPoolExecutor(
+    max_workers=4, thread_name_prefix="webhook-worker"
+)
+
 # Serve the embedded web UI assets at /static/*.
 _STATIC_DIR = Path(__file__).parent / "static"
 if _STATIC_DIR.is_dir():
@@ -240,8 +249,31 @@ async def analyze(
         '{"text_det_thresh":0.2,"granularity":"paragraph"}. '
         'All fields optional; omitted fields use server defaults.',
     ),
+    callback_url: str | None = Form(
+        None,
+        description="Optional webhook URL. When set, the service POSTs a tiny "
+                    "status payload (event/task_id/status/biz_id/timestamp) here "
+                    "on completion or failure; the receiver then GETs "
+                    "/tasks/{task_id} for the full result. Must be http(s).",
+    ),
+    callback_secret: str | None = Form(
+        None,
+        description="Optional shared secret for HMAC-SHA256 webhook signing. "
+                    "When set, the POST carries X-Webhook-Signature: sha256=<hex> "
+                    "over the raw body. Omit to send an unsigned callback.",
+    ),
+    biz_id: str | None = Form(
+        None,
+        description="Optional business id echoed verbatim in the webhook payload, "
+                    "so the receiver can correlate the callback to its own record.",
+    ),
 ) -> JSONResponse:
     settings = _settings()
+    # Validate the callback URL early (before any OCR work) so a malformed URL
+    # is a clean 400, not a job that runs and then fails to notify.
+    if callback_url:
+        _validate_callback_url(callback_url)
+
     # source label for logs: which input path the caller used.
     src = f"url={url}" if url else (f"file={file.filename}" if file else "none")
     t_start = time.perf_counter()
@@ -269,6 +301,24 @@ async def analyze(
             "/analyze sync %dx%d %s items=%d %.2fs",
             w, h, src, len(resp.items), time.perf_counter() - t_start,
         )
+
+        # When a callback is requested, also publish the result under a task_id
+        # so the receiver's GET /tasks/{id} works the same way as the async
+        # path. The AnalyzeResponse already carries an optional task_id field,
+        # so backfilling it is fully backward compatible (it stays None when no
+        # callback is requested — the common, inline-return case is unchanged).
+        if callback_url:
+            sync_task_id = uuid.uuid4().hex
+            resp.task_id = sync_task_id
+            _tasks[sync_task_id] = TaskStatus(
+                task_id=sync_task_id, status="done", result=resp
+            )
+            _fire_webhook(
+                sync_task_id, "done",
+                callback_url=callback_url,
+                callback_secret=callback_secret,
+                biz_id=biz_id,
+            )
         return JSONResponse(status_code=200, content=resp.model_dump())
 
     # Async path (large images). Offload to the thread pool — NOT
@@ -289,12 +339,28 @@ async def analyze(
                 "/analyze async task=%s %dx%d %s items=%d done in %.2fs",
                 task_id, w, h, src, len(resp.items), time.perf_counter() - t,
             )
+            _fire_webhook(
+                task_id, "done",
+                callback_url=callback_url,
+                callback_secret=callback_secret,
+                biz_id=biz_id,
+            )
         except Exception as exc:  # noqa: BLE001 — surface to caller
+            err = f"{type(exc).__name__}: {exc}"
             _tasks[task_id].status = "error"
-            _tasks[task_id].error = f"{type(exc).__name__}: {exc}"
+            _tasks[task_id].error = err
             logger.warning(
                 "/analyze async task=%s failed in %.2fs: %s",
                 task_id, time.perf_counter() - t, exc,
+            )
+            # Notify on failure too — the receiver otherwise can't tell a slow
+            # job from a dead one and would poll forever.
+            _fire_webhook(
+                task_id, "error",
+                callback_url=callback_url,
+                callback_secret=callback_secret,
+                biz_id=biz_id,
+                error=err,
             )
 
     # Fire-and-forget on the pool; the response returns immediately with 202.
@@ -332,6 +398,53 @@ def _parse_options(raw: str | None) -> "OCROptions | None":
     # Drop nulls so omitted fields fall back to server defaults.
     obj = {k: v for k, v in obj.items() if v is not None}
     return OCROptions(**obj) if obj else None
+
+
+def _validate_callback_url(url: str) -> None:
+    """Reject non-http(s) callback URLs.
+
+    Callers are trusted internal systems (see app/fetch.py), so this is a guard
+    against typos / accidental ``file://`` or ``ftp://`` rather than an SSRF
+    defense. Surfaced as HTTP 400 so the caller can fix the URL immediately.
+    """
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise HTTPException(
+            status_code=400,
+            detail="callback_url must be an absolute http(s) URL",
+        )
+
+
+def _fire_webhook(
+    task_id: str,
+    status: str,
+    *,
+    callback_url: str | None,
+    callback_secret: str | None,
+    biz_id: str | None,
+    error: str | None = None,
+) -> None:
+    """Enqueue an outbound webhook delivery — fire-and-forget.
+
+    No-op when ``callback_url`` is absent (the common case). Otherwise submit
+    ``webhook.deliver`` to the webhook pool; it logs failures and never raises,
+    so OCR throughput and the HTTP response are unaffected by callback delivery.
+    """
+    if not callback_url:
+        return
+    from .webhook import deliver
+
+    _webhook_executor.submit(
+        deliver,
+        task_id,
+        status,
+        biz_id,
+        callback_url,
+        callback_secret,
+        error,
+    )
 
 
 @app.get("/tasks/{task_id}", response_model=TaskStatus)

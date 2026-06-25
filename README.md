@@ -80,6 +80,56 @@ curl -F "url=http://内网图床/sample.png" http://localhost:8000/analyze
 curl -F "url=http://内网图床/sample.png" "http://localhost:8000/analyze?annotate=1"
 ```
 
+### Webhook 回调(`callback_url`)
+
+检测完成后,业务系统可以用 webhook 被动接收完成通知,**免去轮询 `/tasks/{id}`**。在 `/analyze`
+请求里加 3 个可选表单字段即可(全部向后兼容,不传时行为不变):
+
+| 字段 | 必填 | 说明 |
+|---|---|---|
+| `callback_url` | 否 | 回调地址,必须是 http(s)。检测完成(或失败)后服务会向这里 POST 一个轻量状态包。 |
+| `callback_secret` | 否 | 共享密钥。传入则对 body 做 HMAC-SHA256 签名,放在请求头 `X-Webhook-Signature: sha256=<hex>`;不传则不签名。 |
+| `biz_id` | 否 | 业务标识,原样回传到回调体,便于业务系统关联自己的订单/记录。 |
+
+> 触发范围:`/analyze` 的**同步路径**(小图)和**异步路径**(大图)都会触发。同步路径在带回调时会额外生成 `task_id` 并把结果存入任务表,这样无论走哪条路径,业务系统都能统一用 `GET /tasks/{task_id}` 回查完整结果。
+
+**回调体**(故意做得小且幂等 —— 完整 OCR 结果请用 `task_id` 回查):
+
+```jsonc
+{
+  "event": "analyze.completed",        // 或 "analyze.failed"
+  "task_id": "91074aa2c74d46a99ca035e45f8bbb59",
+  "status": "done",                    // 或 "error"
+  "biz_id": "order-42",                // 调用方传入才有
+  "timestamp": "2026-06-24T12:34:56Z"  // ISO-8601 UTC
+  // "error": "..."                    // 仅 failed 时出现
+}
+```
+
+**示例 — 异步大图 + 回调:**
+
+```bash
+curl -F "file=@huge.png" \
+     -F "callback_url=http://biz.test/hook" \
+     -F "callback_secret=s3cr3t" \
+     -F "biz_id=order-42" \
+     http://localhost:8000/analyze
+# → 202 { "task_id": "..." }  (立即返回)
+# → 检测完成后服务主动 POST http://biz.test/hook
+```
+
+**接收方校验签名(Python 示例):**
+
+```python
+import hmac, hashlib
+expected = "sha256=" + hmac.new(SECRET.encode(), request.raw_body, hashlib.sha256).hexdigest()
+hmac.compare_digest(expected, request.headers["X-Webhook-Signature"])  # True = 合法
+# 校验通过后再 GET /tasks/{task_id} 拉完整结果
+```
+
+> **投递策略**:fire-and-forget,单次尝试,10s 超时。投递在**独立线程池**里执行,**绝不影响 OCR 结果**(失败仅记 WARNING 日志)。回调失败的兜底方式是继续轮询 `/tasks/{id}` —— 接收方应做成幂等。重试队列/指数退避见 v2 roadmap。调用方为可信内网系统,故未加 SSRF 守卫(与 `url` 输入一致);若对外暴露请自行加白名单。
+
+
 ### Response shape (OCR)
 
 ```jsonc
@@ -200,6 +250,7 @@ app/
   preprocess.py    Die-line blank-margin auto-crop
   config.py        pydantic-settings (.env-driven)
   fetch.py         Download `url` form field → bytes (streamed + size-capped)
+  webhook.py       Outbound webhook delivery (callback_url → HMAC-signed status ping)
   schemas.py       API I/O models
   ocr/             PaddleOCR wrapper (detector + recognizer + aggregator)
   codes/           pyzbar QR/barcode
