@@ -166,6 +166,7 @@ class VLMConfigUpdate(BaseModel):
     base_url: str | None = None
     model: str | None = None
     api_key: str | None = None  # None/"" → don't touch the stored key
+    vlm_enabled: bool | None = None
     understand_enabled: bool | None = None
     enable_thinking: bool | None = None
 
@@ -180,6 +181,7 @@ def _vlm_config_payload(s: "Settings") -> dict:
         "model": s.vlm_model,
         "api_key_masked": mask(s.vlm_api_key),
         "has_key": bool(s.vlm_api_key),
+        "vlm_enabled": s.vlm_enabled,
         "understand_enabled": s.understand_enabled,
         "enable_thinking": s.vlm_enable_thinking,
     }
@@ -210,6 +212,8 @@ def save_vlm_config(body: VLMConfigUpdate) -> JSONResponse:
         writes.append(("OCR_VLM_MODEL", body.model))
     if body.api_key:  # empty string → don't overwrite the stored key
         writes.append(("OCR_VLM_API_KEY", body.api_key))
+    if body.vlm_enabled is not None:
+        writes.append(("OCR_VLM_ENABLED", str(body.vlm_enabled).lower()))
     if body.understand_enabled is not None:
         writes.append(("OCR_UNDERSTAND_ENABLED", str(body.understand_enabled).lower()))
     if body.enable_thinking is not None:

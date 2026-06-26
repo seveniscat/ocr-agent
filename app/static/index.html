@@ -137,16 +137,56 @@
   .seg button {
     flex: 1; background: var(--panel-2); color: var(--muted); border: none; padding: 5px; font-size: 11px; cursor: pointer;
   }
-  .canvas svg polygon.crop-frame {
-    fill: rgba(245, 158, 11, .08); stroke: var(--warn); stroke-width: 2;
-    stroke-dasharray: 8 4;
+
+  /* modal dialog (VLM config etc.) — full-screen backdrop + centered panel.
+     No existing modal pattern in the app; this introduces it, reusing the
+     panel/accent tokens for visual consistency. */
+  .modal-backdrop {
+    display: none;                       /* toggled via .open */
+    position: fixed; inset: 0; z-index: 1000;
+    background: rgba(0, 0, 0, .55);
+    backdrop-filter: blur(2px);
+    align-items: flex-start; justify-content: center;
+    padding: 5vh 16px; overflow-y: auto;
   }
-  .canvas svg rect.crop-mask {
-    fill: rgba(0,0,0,.55); pointer-events: none;
+  .modal-backdrop.open { display: flex; }
+  .modal {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    width: 100%; max-width: 520px; box-shadow: 0 12px 48px rgba(0,0,0,.45);
+    margin-bottom: 5vh;
   }
-  .canvas svg line.crop-size {
-    stroke: var(--warn); stroke-width: 1.5; stroke-dasharray: 4 3;
+  .modal-head {
+    display: flex; align-items: center; gap: 8px;
+    padding: 14px 18px; border-bottom: 1px solid var(--border);
   }
+  .modal-head h3 { margin: 0; font-size: 14px; font-weight: 600; flex: 1; }
+  .modal-head .close {
+    background: none; border: none; color: var(--muted); cursor: pointer;
+    font-size: 18px; line-height: 1; padding: 2px 6px; border-radius: 4px;
+  }
+  .modal-head .close:hover { color: var(--text); background: var(--panel-2); }
+  .modal-body { padding: 14px 18px; }
+  /* VLM master switch — a prominent toggle at the top of the modal */
+  .master-switch {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 12px; margin-bottom: 12px; border-radius: 8px;
+    background: var(--panel-2); border: 1px solid var(--border);
+  }
+  .master-switch .ms-label { font-size: 13px; font-weight: 600; }
+  .master-switch .ms-hint { font-size: 10px; color: var(--muted); margin-top: 2px; }
+  /* pill-style toggle (checkbox-driven, no extra JS for styling) */
+  .toggle { position: relative; width: 40px; height: 22px; flex: none; }
+  .toggle input { opacity: 0; width: 0; height: 0; position: absolute; }
+  .toggle .track {
+    position: absolute; inset: 0; background: var(--border); border-radius: 11px;
+    transition: background .15s; cursor: pointer;
+  }
+  .toggle .track::after {
+    content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px;
+    background: #fff; border-radius: 50%; transition: transform .15s;
+  }
+  .toggle input:checked + .track { background: var(--accent-2); }
+  .toggle input:checked + .track::after { transform: translateX(18px); }
 
   .canvas svg rect.panel-box {
     fill: rgba(79, 140, 255, .12); stroke: var(--accent); stroke-width: 2;
@@ -172,18 +212,16 @@
     fill: #fff; font-size: 22px; font-weight: 600;
     paint-order: stroke; stroke: var(--und, #6366f1); stroke-width: 2px;
   }
-  /* candidate cut lines (interactive splitting) */
+  /* candidate cut lines (interactive splitting) — drag-only */
   .canvas svg line.cutline {
-    pointer-events: stroke; cursor: pointer;
-    stroke-width: 3;
+    pointer-events: stroke; stroke-width: 3;
   }
-  .canvas svg line.cutline.selected { stroke: var(--accent-2); stroke-width: 4; }
+  .canvas svg line.cutline.orient-h { cursor: ns-resize; }
+  .canvas svg line.cutline.orient-v { cursor: ew-resize; }
   .canvas svg line.cutline.conf-high { stroke: var(--accent-2); }
-  .canvas svg line.cutline.conf-high.unselected { stroke: var(--accent-2); stroke-dasharray: 12 6; opacity: .55; }
-  .canvas svg line.cutline.conf-mid { stroke: var(--warn); stroke-dasharray: 10 6; opacity: .8; }
-  .canvas svg line.cutline.conf-mid.selected { stroke: var(--warn); stroke-dasharray: none; opacity: 1; stroke-width: 4; }
-  .canvas svg line.cutline.conf-low { stroke: #888; stroke-dasharray: 6 5; opacity: .5; }
-  .canvas svg line.cutline.conf-low.selected { stroke: #888; stroke-dasharray: none; opacity: .9; stroke-width: 4; }
+  .canvas svg line.cutline.conf-mid  { stroke: var(--warn); opacity: .9; }
+  .canvas svg line.cutline.conf-low  { stroke: #888; opacity: .7; }
+  .canvas svg line.cutline.dragging  { stroke: #fff; stroke-width: 5; opacity: 1; }
   .canvas svg rect.preview-panel {
     fill: rgba(79,140,255,.06); stroke: rgba(79,140,255,.4); stroke-width: 1.5;
     pointer-events: none;
@@ -193,33 +231,6 @@
   .split-toolbar { padding: 8px 14px 10px; border-top: 1px solid var(--border); background: var(--panel-2); }
   .split-info { font-size: 12px; color: var(--accent-2); margin-bottom: 6px; font-family: "SF Mono", Menlo, monospace; }
   .split-hint { font-size: 10px; color: var(--muted); margin-top: 6px; line-height: 1.5; }
-
-  /* crop preview modal */
-  .modal {
-    position: fixed; inset: 0; background: rgba(0,0,0,.75);
-    display: none; align-items: center; justify-content: center; z-index: 100;
-    backdrop-filter: blur(4px);
-  }
-  .modal.show { display: flex; }
-  .modal .box {
-    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
-    max-width: 92vw; max-height: 92vh; display: flex; flex-direction: column; overflow: hidden;
-  }
-  .modal .head {
-    padding: 12px 16px; border-bottom: 1px solid var(--border);
-    display: flex; align-items: center; gap: 12px;
-  }
-  .modal .head h3 { margin: 0; font-size: 14px; }
-  .modal .head .spacer { flex: 1; }
-  .modal .head .close { cursor: pointer; color: var(--muted); font-size: 20px; line-height: 1; }
-  .modal .head .close:hover { color: var(--text); }
-  .modal .stats { padding: 10px 16px; font-size: 12px; color: var(--muted); border-bottom: 1px solid var(--border); display: flex; gap: 16px; flex-wrap: wrap; }
-  .modal .stats b { color: var(--accent-2); font-family: "SF Mono", Menlo, monospace; }
-  .modal .stats .removed { color: var(--warn); }
-  .modal .body { padding: 16px; overflow: auto; display: flex; gap: 16px; flex-wrap: wrap; justify-content: center; background: var(--bg); }
-  .modal .body .col { text-align: center; }
-  .modal .body .col .cap { font-size: 11px; color: var(--muted); margin-bottom: 6px; }
-  .modal .body img { max-width: 42vw; max-height: 60vh; border: 1px solid var(--border); border-radius: 6px; object-fit: contain; background: #fff; }
   .seg button.active { background: var(--accent); color: #fff; }
 
   .tabs { display: flex; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
@@ -284,6 +295,19 @@
   .und-elem .desc { color: var(--text); }
   .und-raw { margin: 10px 14px; padding: 8px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px; font-size: 10px; color: var(--muted); max-height: 140px; overflow: auto; white-space: pre-wrap; word-break: break-all; }
 
+  /* Agent reasoning trace timeline */
+  .trace-wrap { margin: 10px 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); overflow: hidden; }
+  .trace-title { padding: 8px 12px; font-size: 11px; font-weight: 600; color: var(--accent); border-bottom: 1px solid var(--border); background: var(--panel-2); text-transform: uppercase; letter-spacing: .4px; }
+  .trace-step { padding: 8px 12px; border-bottom: 1px solid var(--border); }
+  .trace-step:last-child { border-bottom: none; }
+  .trace-head { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .3px; margin-bottom: 4px; }
+  .trace-thought { font-size: 12px; color: var(--text); line-height: 1.5; margin-bottom: 6px; padding: 6px 8px; background: var(--panel-2); border-radius: 4px; border-left: 2px solid var(--accent); }
+  .trace-tool { margin: 4px 0 4px 12px; padding: 5px 8px; background: var(--panel-2); border-radius: 4px; font-size: 11px; }
+  .trace-tool-name { color: var(--accent-2); font-weight: 600; }
+  .trace-args { display: block; color: var(--muted); font-family: "SF Mono", Menlo, monospace; font-size: 10px; margin-top: 2px; word-break: break-all; }
+  .trace-obs { color: var(--text-color); font-size: 10px; margin-top: 3px; padding-top: 3px; border-top: 1px dashed var(--border); word-break: break-all; }
+  .trace-fallback { padding: 10px 12px; font-size: 12px; color: var(--warn); }
+
   pre.json {
     margin: 0; padding: 10px; font-size: 11px; line-height: 1.5;
     font-family: "SF Mono", Menlo, Consolas, monospace; color: var(--text);
@@ -335,7 +359,6 @@
       </div>
       <div class="action-row">
         <button class="btn primary" id="recognizeBtn" disabled>▶ 识别</button>
-        <button class="btn" id="previewCropBtn" disabled>✂ 预览裁剪</button>
         <button class="btn" id="splitPanelsBtn" disabled>⊞ 拆面</button>
         <button class="btn" id="understandBtn" disabled>✦ AI 理解</button>
         <button class="btn ghost" id="clearBtn" disabled>清除</button>
@@ -348,82 +371,16 @@
           <button class="btn primary" id="confirmSplitBtn">✓ 确认拆面</button>
           <button class="btn ghost" id="cancelSplitBtn">取消</button>
         </div>
-        <div class="split-hint">单击线: 切换选中 · 双击空白: 添加线(水平/垂直自动) · 绿=高置信 黄=中 灰=低</div>
+        <div class="split-hint">按住线条拖拽(横线上下/竖线左右)对齐切割位置 · 绿=高 黄=中 灰=低 · 确认拆面</div>
       </div>
     </div>
 
-    <!-- VLM provider config (persisted to .env; powers AI 理解 + art-text fallback) -->
-    <details class="params" id="vlmConfig" open>
-      <summary>
+    <!-- VLM provider config entry → opens a modal (persisted to .env; powers AI 理解 + art-text fallback) -->
+    <details class="params" id="vlmConfig">
+      <summary id="vlmConfigEntry">
         <span class="chev">▸</span> VLM 配置（AI 理解 / 艺术字兜底）
         <span class="badge" id="vlmBadge">未配置</span>
       </summary>
-      <div class="param-group">
-        <div class="field">
-          <label>Provider</label>
-          <input type="text" value="qwen" disabled style="opacity:.6">
-          <div class="hint">OpenAI 兼容协议接入 DashScope / 自建端点（当前仅支持 qwen）</div>
-        </div>
-        <div class="field">
-          <label>base_url</label>
-          <input type="text" id="cfg_baseurl" placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1">
-        </div>
-        <div class="field">
-          <label>model</label>
-          <select id="cfg_model">
-            <optgroup label="推荐（最新一代）">
-              <option value="qwen3.7-plus">qwen3.7-plus · 性能最强（推荐）</option>
-            </optgroup>
-            <optgroup label="均衡 / 快速（性价比）">
-              <option value="qwen3.6-plus">qwen3.6-plus · 均衡</option>
-              <option value="qwen3.6-flash">qwen3.6-flash · 快速低成本</option>
-              <option value="qwen3.5-flash">qwen3.5-flash · 性价比</option>
-            </optgroup>
-            <optgroup label="专项（物体定位）">
-              <option value="qwen3-vl-plus">qwen3-vl-plus · 2D/3D 定位</option>
-              <option value="qwen3-vl-flash">qwen3-vl-flash · 定位快速</option>
-            </optgroup>
-            <optgroup label="自定义">
-              <option value="__custom__">其它（手动输入）…</option>
-            </optgroup>
-          </select>
-          <input type="text" id="cfg_model_custom" placeholder="手动输入模型名" style="display:none; margin-top:4px;">
-          <div class="hint">⚠️ qwen-vl-max / qwen-vl-plus 将于 2026-07-13 下线，请用 qwen3.x 系列</div>
-        </div>
-        <div class="field">
-          <label>api_key <span class="val" id="cfg_keyhint"></span></label>
-          <input type="password" id="cfg_apikey" placeholder="留空=沿用已保存的 key" autocomplete="off">
-          <div class="hint" id="cfg_keyhint2">通过 OpenAI 兼容协议接入；本输入框只发送新值</div>
-        </div>
-        <div class="field">
-          <label><input type="checkbox" id="cfg_understand" checked> 启用 AI 理解层（POST /understand）</label>
-          <label><input type="checkbox" id="cfg_thinking"> 思考模式（Qwen3.x 深度推理；与 JSON 严格输出互斥，靠容错解析）</label>
-        </div>
-        <div class="action-row" style="margin-top:6px">
-          <button class="btn primary" id="saveVlmBtn">💾 保存配置</button>
-          <span class="val" id="cfg_status"></span>
-        </div>
-      </div>
-    </details>
-
-    <!-- Crop params -->
-    <details class="params" id="cropParams" open>
-      <summary>
-        <span class="chev">▸</span> 裁剪参数（预览裁剪）
-        <span class="badge" id="cropBadge">已改</span>
-      </summary>
-      <div class="param-group">
-        <div class="field">
-          <label>threshold <span class="val" id="v_cropt">240</span></label>
-          <input type="range" id="p_cropt" min="100" max="255" step="1" value="240">
-          <div class="hint">灰度阈值：&lt; 此值视为内容。调低→只认深色墨迹；调高→更激进（可能吃掉浅色背景）</div>
-        </div>
-        <div class="field">
-          <label>padding <span class="val" id="v_cropp">0</span></label>
-          <input type="range" id="p_cropp" min="0" max="200" step="1" value="0">
-          <div class="hint">裁剪后额外保留的边距(px)，避免内容贴边</div>
-        </div>
-      </div>
     </details>
 
     <!-- Tunable params -->
@@ -534,26 +491,13 @@
   </div>
 </div>
 
-<!-- Crop preview modal -->
-<div class="modal" id="cropModal">
-  <div class="box">
-    <div class="head">
-      <h3>✂ 裁剪预览</h3>
-      <span class="spacer"></span>
-      <span class="close" id="cropClose">×</span>
-    </div>
-    <div class="stats" id="cropStats"></div>
-    <div class="body" id="cropBody"></div>
-  </div>
-</div>
-
 <script>
 const $ = id => document.getElementById(id);
 
 // =========================================================================
 // pan-zoom viewer (unchanged logic)
 // =========================================================================
-const view = { iw:0, ih:0, scale:1, tx:0, ty:0, fitScale:1, minScale:0.05, maxScale:40, items:[], activeIdx:-1, crop:null, panels:[], activePanel:-1, understanding:null, activeUndIdx:-1, candidates:[], splitMode:false, subject:null };
+const view = { iw:0, ih:0, scale:1, tx:0, ty:0, fitScale:1, minScale:0.05, maxScale:40, items:[], activeIdx:-1, panels:[], activePanel:-1, understanding:null, activeUndIdx:-1, candidates:[], splitMode:false, subject:null };
 const viewer = $('viewer'), canvas = $('canvas'), img = $('img'), svg = $('svg');
 
 function showImage(srcUrl) {
@@ -599,7 +543,6 @@ function drawPolygons() {
     const baseW = p.classList.contains('hl') ? 3 : 1.5;
     p.style.strokeWidth = (baseW/view.scale).toFixed(3);
   });
-  drawCropOverlay();
   drawPanelsOverlay();
   drawCandidatesOverlay();
   drawUnderstandingOverlay();
@@ -621,7 +564,17 @@ function drawCandidatesOverlay() {
     svg.appendChild(r);
   }
 
-  // 2. Candidate lines — clickable to toggle.
+  // 2. Candidate lines — drag to reposition (no click-to-toggle / no add).
+  drawCutLines();
+}
+
+// Render just the candidate cut lines (shared by the full redraw and the
+// lightweight per-mousemove redraw during a drag). Clears only .cutline nodes,
+// leaving .preview-panel rects in place so the preview boxes don't flicker
+// while dragging — they're recomputed only on mouseup.
+function drawCutLines() {
+  const ns = 'http://www.w3.org/2000/svg';
+  svg.querySelectorAll('.cutline').forEach(n => n.remove());
   const W = view.iw, H = view.ih;
   for (const c of view.candidates) {
     const ln = document.createElementNS(ns, 'line');
@@ -633,16 +586,47 @@ function drawCandidatesOverlay() {
       ln.setAttribute('x2', c.pos); ln.setAttribute('y2', H);
     }
     const confClass = c.confidence >= 1.0 ? 'conf-high' : c.confidence >= 0.8 ? 'conf-mid' : 'conf-low';
-    ln.setAttribute('class', `cutline ${confClass} ${c.selected ? 'selected' : 'unselected'}`);
-    ln.style.strokeWidth = ((c.selected ? 4 : 3) / view.scale).toFixed(3);
+    const dragClass = (lineDrag && lineDrag.candidate === c) ? ' dragging' : '';
+    ln.setAttribute('class', `cutline orient-${c.orientation} ${confClass}${dragClass}`);
+    ln.style.strokeWidth = (3 / view.scale).toFixed(3);
     ln.dataset.cid = c.id;
-    ln.addEventListener('click', (ev) => {
-      ev.stopPropagation();
-      toggleCandidate(c.id);
+    ln.addEventListener('mousedown', (ev) => {
+      ev.stopPropagation();   // prevent the viewer's pan handler from also starting
+      startLineDrag(c, ev);
     });
     svg.appendChild(ln);
   }
 }
+
+// --- Cut-line dragging (mouse) ---
+// mousedown on a line captures it; window mousemove updates its pos and
+// re-draws ONLY the lines (preview rects stay put); window mouseup recomputes
+// the preview and redraws everything.
+let lineDrag = null;
+function startLineDrag(candidate, ev) {
+  lineDrag = { candidate };
+  document.body.style.userSelect = 'none';
+  drawCutLines();  // re-render so the dragged line gets the .dragging class
+}
+window.addEventListener('mousemove', (e) => {
+  if (!lineDrag) return;
+  const r = viewer.getBoundingClientRect();
+  const imgX = (e.clientX - r.left - view.tx) / view.scale;
+  const imgY = (e.clientY - r.top - view.ty) / view.scale;
+  if (lineDrag.candidate.orientation === 'h') {
+    lineDrag.candidate.pos = Math.max(0, Math.min(view.ih, Math.round(imgY)));
+  } else {
+    lineDrag.candidate.pos = Math.max(0, Math.min(view.iw, Math.round(imgX)));
+  }
+  drawCutLines();  // light redraw: lines only, preview panels untouched
+});
+window.addEventListener('mouseup', () => {
+  if (!lineDrag) return;
+  lineDrag = null;
+  document.body.style.userSelect = '';
+  drawPolygons();    // full redraw: recompute preview panels from new positions
+  updateSplitInfo();
+});
 
 // Draw detected main panels as numbered blue boxes.
 function drawPanelsOverlay() {
@@ -737,37 +721,6 @@ function drawUnderstandingOverlay() {
 
 // Draw the auto-crop frame on the image (4 dark masks outside the crop box +
 // an amber dashed frame). Called whenever polygons redraw or the crop changes.
-function drawCropOverlay() {
-  // Remove any previous crop overlay nodes.
-  svg.querySelectorAll('.crop-mask, .crop-frame, .crop-size').forEach(n => n.remove());
-  const c = view.crop;
-  if (!c) return;
-  const W = view.iw, H = view.ih;
-  const [x0, y0, x1, y1] = c;
-  const ns = 'http://www.w3.org/2000/svg';
-  // Four rectangles covering the area OUTSIDE the crop box (the "to be cut" zone).
-  const masks = [
-    [0, 0, W, y0],         // top strip
-    [0, y1, W, H - y1],    // bottom strip
-    [0, y0, x0, y1 - y0],  // left strip
-    [x1, y0, W - x1, y1 - y0], // right strip
-  ];
-  masks.forEach(([mx, my, mw, mh]) => {
-    if (mw <= 0 || mh <= 0) return;
-    const r = document.createElementNS(ns, 'rect');
-    r.setAttribute('x', mx); r.setAttribute('y', my);
-    r.setAttribute('width', mw); r.setAttribute('height', mh);
-    r.setAttribute('class', 'crop-mask');
-    svg.appendChild(r);
-  });
-  // Amber dashed frame on the crop box.
-  const fr = document.createElementNS(ns, 'rect');
-  fr.setAttribute('x', x0); fr.setAttribute('y', y0);
-  fr.setAttribute('width', x1 - x0); fr.setAttribute('height', y1 - y0);
-  fr.setAttribute('class', 'crop-frame');
-  fr.style.strokeWidth = (2 / view.scale).toFixed(3);
-  svg.appendChild(fr);
-}
 function setTransform() { canvas.style.transform = `translate3d(${view.tx}px,${view.ty}px,0) scale(${view.scale})`; }
 function updateZoomVal() { $('zoomVal').textContent = Math.round(view.scale*100)+'%'; }
 function clampScale(s){ return Math.max(view.minScale, Math.min(view.maxScale, s)); }
@@ -793,18 +746,6 @@ window.addEventListener('mousemove',e=>{if(!dragging)return;view.tx+=e.clientX-l
 window.addEventListener('mouseup',()=>{dragging=false;viewer.classList.remove('grabbing');});
 viewer.addEventListener('dblclick',(e)=>{
   if (!view.iw) return;
-  if (view.splitMode) {
-    // Add a cut line at the double-clicked position. Shift = horizontal line,
-    // plain = vertical line (most die-line splits are between vertical faces).
-    const r = viewer.getBoundingClientRect();
-    const imgX = (e.clientX - r.left - view.tx) / view.scale;
-    const imgY = (e.clientY - r.top - view.ty) / view.scale;
-    if (imgX >= 0 && imgX <= view.iw && imgY >= 0 && imgY <= view.ih) {
-      addCandidateAt(imgX, imgY, e.shiftKey);
-      e.preventDefault();
-    }
-    return;
-  }
   fit();
 });
 $('zoomIn').onclick=()=>{const r=viewer.getBoundingClientRect();zoomAt(r.left+r.width/2,r.top+r.height/2,1.25);};
@@ -878,140 +819,6 @@ function buildOptions() {
 }
 
 // =========================================================================
-// crop params state + preview flow
-// =========================================================================
-const CROP_DEFAULTS = { cropt: 240, cropp: 0 };
-const cropParams = { ...CROP_DEFAULTS };
-view.crop = null;  // current crop box [x0,y0,x1,y1] in image coords, or null
-view.panels = [];  // detected main panels [{bbox:[x0,y0,x1,y1], image_b64}]
-
-function syncCropUI() {
-  $('p_cropt').value = cropParams.cropt; $('v_cropt').textContent = cropParams.cropt;
-  $('p_cropp').value = cropParams.cropp; $('v_cropp').textContent = cropParams.cropp;
-  markCropChanged();
-}
-function markCropChanged() {
-  const changed = JSON.stringify(cropParams) !== JSON.stringify(CROP_DEFAULTS);
-  $('cropBadge').classList.toggle('show', changed);
-}
-$('p_cropt').addEventListener('input', e => {
-  cropParams.cropt = parseInt(e.target.value, 10);
-  $('v_cropt').textContent = cropParams.cropt; markCropChanged();
-});
-$('p_cropp').addEventListener('input', e => {
-  cropParams.cropp = parseInt(e.target.value, 10);
-  $('v_cropp').textContent = cropParams.cropp; markCropChanged();
-});
-
-$('previewCropBtn').addEventListener('click', previewCrop);
-$('cropClose').addEventListener('click', () => $('cropModal').classList.remove('show'));
-$('cropModal').addEventListener('click', e => { if (e.target.id === 'cropModal') $('cropModal').classList.remove('show'); });
-
-async function previewCrop() {
-  if (!currentFile) return;
-  $('previewCropBtn').disabled = true;
-  setStatus('计算裁剪区域…', 'busy');
-  try {
-    const fd = new FormData();
-    fd.append('file', currentFile);
-    const r = await fetch(
-      `/preprocess?threshold=${cropParams.cropt}&padding=${cropParams.cropp}`,
-      { method: 'POST', body: fd },
-    );
-    if (!r.ok) throw new Error(`HTTP ${r.status}: ${(await r.text()).slice(0, 200)}`);
-    const data = await r.json();
-    // Overlay crop frame on the main viewer (image-space coords).
-    view.crop = data.crop;
-    drawCropOverlay();
-    // Open the side-by-side preview modal.
-    showCropModal(data);
-    if (data.crop) {
-      setStatus(`裁剪预览 · ${data.width}×${data.height} → ${data.cropped_width}×${data.cropped_height} · 减少 ${(data.removed_ratio * 100).toFixed(1)}%`, 'ok');
-    } else {
-      setStatus('图像无空白可裁剪（内容已占满整图）', 'ok');
-    }
-  } catch (err) {
-    setStatus('裁剪失败: ' + err.message, 'error'); console.error(err);
-  } finally {
-    $('previewCropBtn').disabled = false;
-  }
-}
-
-function showCropModal(data) {
-  const stats = $('cropStats');
-  if (!data.crop) {
-    stats.innerHTML = `<span>原图 <b>${data.width}×${data.height}</b></span><span class="removed">无空白可裁剪</span>`;
-    $('cropBody').innerHTML = `<div class="col"><div class="cap">原图（未裁剪）</div><img src="${currentObjectUrl}" alt=""></div>`;
-  } else {
-    const [x0, y0, x1, y1] = data.crop;
-    stats.innerHTML =
-      `<span>原图 <b>${data.width}×${data.height}</b></span>` +
-      `<span>裁剪框 <b>[${x0}, ${y0}, ${x1}, ${y1}]</b></span>` +
-      `<span>裁后 <b>${data.cropped_width}×${data.cropped_height}</b></span>` +
-      `<span class="removed">减少像素 ${(data.removed_ratio * 100).toFixed(1)}%</span>`;
-    $('cropBody').innerHTML =
-      `<div class="col"><div class="cap">原图 (红色框 = 裁剪区域)</div>` +
-      `<img src="${currentObjectUrl}" alt="" id="cropOrig"></div>` +
-      `<div class="col"><div class="cap">裁剪后</div>` +
-      `<img src="data:image/png;base64,${data.cropped_image_b64}" alt=""></div>`;
-    // Draw the amber frame on the original-image copy in the modal.
-    requestAnimationFrame(() => {
-      const im = $('cropOrig');
-      im.onload = () => drawModalFrame(im, data);
-      if (im.complete) drawModalFrame(im, data);
-    });
-  }
-  $('cropModal').classList.add('show');
-}
-
-// Wrap the modal's original image so we can overlay an SVG crop frame on it.
-function drawModalFrame(im, data) {
-  const W = im.naturalWidth, H = im.naturalHeight;
-  const [x0, y0, x1, y1] = data.crop;
-  const dispW = im.clientWidth || im.naturalWidth;
-  const dispH = im.clientHeight || im.naturalHeight;
-  const sx = dispW / W, sy = dispH / H;
-  // Wrap if not already wrapped.
-  let wrap = im.parentElement.querySelector('.crop-wrap');
-  if (!wrap) {
-    wrap = document.createElement('div');
-    wrap.className = 'crop-wrap';
-    wrap.style.position = 'relative';
-    wrap.style.display = 'inline-block';
-    wrap.style.lineHeight = '0';
-    im.style.position = 'relative';
-    im.parentNode.insertBefore(wrap, im);
-    wrap.appendChild(im);
-    const ov = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-    ov.setAttribute('class', 'crop-overlay');
-    ov.style.position = 'absolute';
-    ov.style.top = '0'; ov.style.left = '0';
-    ov.style.width = '100%'; ov.style.height = '100%';
-    ov.style.pointerEvents = 'none';
-    ov.setAttribute('viewBox', `0 0 ${dispW} ${dispH}`);
-    wrap.appendChild(ov);
-  }
-  const ov = wrap.querySelector('svg.crop-overlay');
-  ov.innerHTML = '';
-  const ns = 'http://www.w3.org/2000/svg';
-  // Darken outside.
-  [[0,0,dispW,y0*sy],[0,y1*sy,dispW,dispH-y1*sy],[0,y0*sy,x0*sx,(y1-y0)*sy],[x1*sx,y0*sy,dispW-x1*sx,(y1-y0)*sy]]
-    .forEach(([mx,my,mw,mh]) => {
-      if (mw<=0||mh<=0) return;
-      const r = document.createElementNS(ns,'rect');
-      r.setAttribute('x',mx);r.setAttribute('y',my);r.setAttribute('width',mw);r.setAttribute('height',mh);
-      r.setAttribute('fill','rgba(0,0,0,.5)'); ov.appendChild(r);
-    });
-  // Amber frame.
-  const fr = document.createElementNS(ns,'rect');
-  fr.setAttribute('x',x0*sx);fr.setAttribute('y',y0*sy);
-  fr.setAttribute('width',(x1-x0)*sx);fr.setAttribute('height',(y1-y0)*sy);
-  fr.setAttribute('fill','none');fr.setAttribute('stroke','#f59e0b');
-  fr.setAttribute('stroke-width','3');fr.setAttribute('stroke-dasharray','10 5');
-  ov.appendChild(fr);
-}
-
-// =========================================================================
 // panel splitting flow — interactive: auto candidates + user confirmation
 // =========================================================================
 $('splitPanelsBtn').addEventListener('click', startSplit);
@@ -1027,26 +834,35 @@ view.splitMode = false;
 async function startSplit() {
   if (!currentFile) return;
   $('splitPanelsBtn').disabled = true;
-  setStatus('VLM 识别面板中（语义布局，约10秒）…', 'busy');
+  setStatus('VLM 找切割线中（512px 缩略,约几秒）…', 'busy');
   try {
     const fd = new FormData();
     fd.append('file', currentFile);
     const r = await fetch('/panels/vlm?preview=true', { method: 'POST', body: fd });
     if (!r.ok) throw new Error(`HTTP ${r.status}: ${(await r.text()).slice(0, 200)}`);
     const data = await r.json();
-    view.splitMode = false;
-    view.candidates = [];
-    view.panels = data.panels || [];
+    if (data.error) throw new Error(data.error);
+
+    // VLM returns cut lines directly. Map them into the interactive candidate
+    // model (selected is always true under drag-only; confidence is carried
+    // through for the color legend). The user then drags lines into exact
+    // position before confirming via /panels/compute.
+    let id = 0;
+    view.candidates = (data.lines || []).map(l => ({
+      id: id++, pos: l.pos, orientation: l.orientation,
+      confidence: l.confidence ?? 0.85, selected: true,
+    }));
+    view.splitMode = true;
+    view.panels = [];
     view.subject = null;            // VLM mode has no subject box
     view.activePanel = -1;
+    $('splitToolbar').style.display = 'block';
     drawPolygons();
-    renderPanelList(data);
-    if (data.error) {
-      setStatus('VLM 拆面失败: ' + data.error, 'error');
-    } else {
-      const labels = (data.panels || []).map(p => p.label).filter(Boolean).join(' ');
-      setStatus(`VLM 拆出 ${data.count} 个面板${labels ? ' · ' + labels : ''}`, 'ok');
-    }
+    updateSplitInfo();
+    const nH = view.candidates.filter(c => c.orientation === 'h').length;
+    const nV = view.candidates.filter(c => c.orientation === 'v').length;
+    const nPanels = previewPanels().length;
+    setStatus(`VLM 找到 ${view.candidates.length} 条切割线（横${nH}/纵${nV}）→ 预览 ${nPanels} 个面板,按住拖拽对齐后确认`, 'ok');
   } catch (err) {
     setStatus('拆面失败: ' + err.message, 'error'); console.error(err);
   } finally {
@@ -1111,33 +927,10 @@ function previewPanels() {
 }
 
 function updateSplitInfo() {
-  const hs = view.candidates.filter(c => c.orientation === 'h' && c.selected).length;
-  const vs = view.candidates.filter(c => c.orientation === 'v' && c.selected).length;
+  const hs = view.candidates.filter(c => c.orientation === 'h').length;
+  const vs = view.candidates.filter(c => c.orientation === 'v').length;
   const n = previewPanels().length;
-  $('splitInfo').textContent = `已选 ${hs} 横 + ${vs} 纵 → ${n} 个面板`;
-}
-
-// Toggle a candidate line's selection on click.
-function toggleCandidate(id) {
-  const c = view.candidates.find(x => x.id === id);
-  if (!c) return;
-  c.selected = !c.selected;
-  drawPolygons();
-  updateSplitInfo();
-}
-
-// Double-click on the image → add a new candidate line at that position.
-// Orientation chosen by proximity to the click: if the click sits closer to a
-// horizontal line's "row" feel (rare), default to vertical (most die-lines
-// are split by vertical lines between faces). We add BOTH a candidate the user
-// can keep, and pick orientation by shift key (shift = horizontal).
-function addCandidateAt(imgX, imgY, horizontal) {
-  const pos = Math.round(horizontal ? imgY : imgX);
-  const cid = (view.candidates.reduce((m, c) => Math.max(m, c.id), -1) || 0) + 1;
-  view.candidates.push({ id: cid, pos, orientation: horizontal ? 'h' : 'v',
-    confidence: 1.0, selected: true });
-  drawPolygons();
-  updateSplitInfo();
+  $('splitInfo').textContent = `横 ${hs} + 纵 ${vs} → ${n} 个面板`;
 }
 
 function renderPanelList(data) {
@@ -1186,6 +979,23 @@ function renderPanelList(data) {
 // =========================================================================
 // VLM provider config flow (GET/POST /config/vlm, persisted to .env)
 // =========================================================================
+
+// --- modal open/close (extracted config panel) ---
+// Clicking the left-panel entry opens the modal; ESC and backdrop-click close.
+$('vlmConfigEntry').addEventListener('click', e => {
+  e.preventDefault();                 // stop the <details> from toggling open
+  openVlmModal();
+});
+function openVlmModal() {
+  $('vlmModal').classList.add('open');
+}
+function closeVlmModal() {
+  $('vlmModal').classList.remove('open');
+}
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && $('vlmModal').classList.contains('open')) closeVlmModal();
+});
+
 $('saveVlmBtn').addEventListener('click', saveVlmConfig);
 
 function _setModelSelect(model) {
@@ -1216,20 +1026,31 @@ $('cfg_model').addEventListener('change', e => {
 });
 
 function applyVlmConfig(d) {
-  // d = { provider, base_url, model, api_key_masked, has_key, understand_enabled, enable_thinking }
+  // d = { provider, base_url, model, api_key_masked, has_key, vlm_enabled, understand_enabled, enable_thinking }
   $('cfg_baseurl').value = d.base_url || '';
   _setModelSelect(d.model || 'qwen3.7-plus');
+  $('cfg_vlm_enabled').checked = d.vlm_enabled !== false;  // default on if unset
   $('cfg_understand').checked = !!d.understand_enabled;
   $('cfg_thinking').checked = !!d.enable_thinking;
   // Never put the real key in the field. Show the masked form as a hint + badge.
   $('cfg_apikey').value = '';
   $('cfg_apikey').placeholder = d.has_key ? `已配置 ${d.api_key_masked}（留空=不改）` : '输入 API key';
   $('cfg_keyhint').textContent = d.has_key ? `(${d.api_key_masked})` : '';
+  // Badge reflects both the master switch and key presence. Off = disabled,
+  // 已配置 = on + key set, 未配置 = on but no key.
   const badge = $('vlmBadge');
-  badge.textContent = d.has_key ? '已配置' : '未配置';
   badge.classList.toggle('show', true);
-  badge.style.background = d.has_key ? 'var(--accent-2)' : 'var(--warn)';
   badge.style.color = 'var(--bg)';
+  if (d.vlm_enabled === false) {
+    badge.textContent = '已关闭';
+    badge.style.background = 'var(--muted)';
+  } else if (d.has_key) {
+    badge.textContent = '已配置';
+    badge.style.background = 'var(--accent-2)';
+  } else {
+    badge.textContent = '未配置';
+    badge.style.background = 'var(--warn)';
+  }
 }
 
 async function loadVlmConfig() {
@@ -1245,6 +1066,7 @@ async function saveVlmConfig() {
     base_url: $('cfg_baseurl').value.trim() || null,
     model: _readModelSelect() || null,
     api_key: $('cfg_apikey').value || null,   // empty → backend keeps stored key
+    vlm_enabled: $('cfg_vlm_enabled').checked,
     understand_enabled: $('cfg_understand').checked,
     enable_thinking: $('cfg_thinking').checked,
   };
@@ -1276,21 +1098,68 @@ $('understandBtn').addEventListener('click', understand);
 async function understand() {
   if (!currentFile) return;
   $('understandBtn').disabled = true;
-  setStatus('AI 理解中（VLM 整图分析）…', 'busy');
+  setStatus('AI 理解中（Agent 多轮推理,请稍候）…', 'busy');
   try {
     const fd = new FormData();
     fd.append('file', currentFile);
-    const r = await fetch('/understand', { method: 'POST', body: fd });
+    // The agent endpoint: qwen3-max brain + VLM/OCR tools, returns conclusion + trace.
+    const r = await fetch('/agent/understand', { method: 'POST', body: fd });
     if (!r.ok) throw new Error(`HTTP ${r.status}: ${(await r.text()).slice(0, 200)}`);
     const data = await r.json();
-    view.understanding = data;
-    renderUnderstanding(data);
-    setStatus('AI 理解完成', 'ok');
+    // conclusion is the same UnderstandingResult shape; trace is the reasoning timeline.
+    const conclusion = data.conclusion || data;
+    view.understanding = conclusion;
+    renderUnderstanding(conclusion);
+    renderTrace(data.trace || [], data);
+    if (data.fallback) {
+      setStatus('AI 理解完成(Agent 降级,见详情)', 'busy');
+    } else {
+      setStatus(`AI 理解完成(${data.rounds || 0} 轮推理)`, 'ok');
+    }
   } catch (err) {
     setStatus('AI 理解失败: ' + err.message, 'error'); console.error(err);
   } finally {
     $('understandBtn').disabled = false;
   }
+}
+
+// Render the agent's reasoning trace as a timeline above the conclusion.
+// trace = [{round, thought, tool_calls:[{id,name,arguments}], observations:[...]}]
+function renderTrace(trace, fullResult) {
+  const pane = $('pane-understand');
+  let traceBox = $('traceBox');
+  if (!traceBox) {
+    traceBox = document.createElement('div');
+    traceBox.id = 'traceBox';
+    traceBox.className = 'trace-wrap';
+    pane.insertBefore(traceBox, pane.firstChild);
+  }
+  if (!trace || !trace.length) {
+    if (fullResult && fullResult.fallback) {
+      traceBox.innerHTML = `<div class="trace-fallback">⚠ Agent 降级运行:${_escapeHtml(fullResult.error || '未知错误')}</div>`;
+    } else {
+      traceBox.innerHTML = '';
+    }
+    return;
+  }
+  const steps = trace.map((s, i) => {
+    const tools = (s.tool_calls || []).map((c, j) => {
+      const obs = (s.observations || [])[j];
+      const obsStr = obs ? _escapeHtml(JSON.stringify(obs).slice(0, 240)) : '';
+      const argStr = _escapeHtml(JSON.stringify(c.arguments || {}));
+      return `<div class="trace-tool">
+        <span class="trace-tool-name">🔧 ${_escapeHtml(c.name)}</span>
+        <code class="trace-args">${argStr}</code>
+        ${obsStr ? `<div class="trace-obs">→ ${obsStr}${obs && JSON.stringify(obs).length>240?'…':''}</div>` : ''}
+      </div>`;
+    }).join('');
+    return `<div class="trace-step">
+      <div class="trace-head">第 ${s.round} 轮 ${s.tool_calls && s.tool_calls.length ? '· 行动' : '· 结论'}</div>
+      ${s.thought ? `<div class="trace-thought">${_escapeHtml(s.thought)}</div>` : ''}
+      ${tools}
+    </div>`;
+  }).join('');
+  traceBox.innerHTML = `<div class="trace-title">推理过程 · ${trace.length} 轮 · ${_escapeHtml(fullResult.model || '')}</div>${steps}`;
 }
 
 function _confClass(c) {
@@ -1373,13 +1242,12 @@ function handleFile(file) {
   currentObjectUrl = URL.createObjectURL(file);
   $('filename').textContent = '📎 ' + file.name + ` (${(file.size/1024).toFixed(0)} KB)`;
   // Show image immediately, NO recognition yet.
-  view.items = []; view.crop = null; view.panels = []; view.candidates = []; view.splitMode = false; view.subject = null;
+  view.items = []; view.panels = []; view.candidates = []; view.splitMode = false; view.subject = null;
   $('splitToolbar').style.display = 'none';
   drawPolygons();
   showImage(currentObjectUrl);
   // enable recognize button, reset results
   $('recognizeBtn').disabled = false;
-  $('previewCropBtn').disabled = false;
   $('splitPanelsBtn').disabled = false;
   $('understandBtn').disabled = false;
   $('clearBtn').disabled = false;
@@ -1396,7 +1264,7 @@ $('clearBtn').addEventListener('click', clearAll);
 function clearAll() {
   currentFile = null;
   if (currentObjectUrl) { URL.revokeObjectURL(currentObjectUrl); currentObjectUrl = null; }
-  view.items = []; view.crop = null; view.panels = []; view.understanding = null;
+  view.items = []; view.panels = []; view.understanding = null;
   view.candidates = []; view.splitMode = false; view.subject = null;
   $('splitToolbar').style.display = 'none';
   drawPolygons();
@@ -1405,7 +1273,6 @@ function clearAll() {
   $('hud').style.display = 'none'; $('hint').style.display = 'none';
   $('filename').textContent = '';
   $('recognizeBtn').disabled = true;
-  $('previewCropBtn').disabled = true;
   $('splitPanelsBtn').disabled = true;
   $('understandBtn').disabled = true;
   $('clearBtn').disabled = true;
@@ -1413,7 +1280,6 @@ function clearAll() {
   $('itemsPlaceholder').textContent = '上传图片后点击「识别」';
   $('understandPlaceholder').textContent = '上传图片后点击「✦ AI 理解」，让 VLM 看懂这张图';
   $('jsonOut').textContent = ''; $('meta').textContent = '';
-  $('cropModal').classList.remove('show');
   setStatus('','');
 }
 
@@ -1505,8 +1371,77 @@ document.querySelectorAll('.tab').forEach(t=>{
 
 // init
 syncParamUI();
-syncCropUI();
 loadVlmConfig();   // populate the VLM config panel from .env (key masked)
+<!-- VLM config modal (extracted from the inline #vlmConfig panel) -->
+<div class="modal-backdrop" id="vlmModal" onclick="if(event.target===this)closeVlmModal()">
+  <div class="modal">
+    <div class="modal-head">
+      <h3>VLM 配置</h3>
+      <button class="close" onclick="closeVlmModal()" aria-label="关闭">×</button>
+    </div>
+    <div class="modal-body">
+      <!-- Master switch: controls vlm_enabled (art-text fallback + understand/agent) -->
+      <div class="master-switch">
+        <div>
+          <div class="ms-label">● VLM 总开关</div>
+          <div class="ms-hint">关闭后 /analyze 不再做艺术字兜底，/understand、/agent/understand 返回 503</div>
+        </div>
+        <label class="toggle">
+          <input type="checkbox" id="cfg_vlm_enabled">
+          <span class="track"></span>
+        </label>
+      </div>
+
+      <div class="param-group" style="padding:0">
+        <div class="field">
+          <label>Provider</label>
+          <input type="text" value="qwen" disabled style="opacity:.6">
+          <div class="hint">OpenAI 兼容协议接入 DashScope / 自建端点（当前仅支持 qwen）</div>
+        </div>
+        <div class="field">
+          <label>base_url</label>
+          <input type="text" id="cfg_baseurl" placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1">
+        </div>
+        <div class="field">
+          <label>model</label>
+          <select id="cfg_model">
+            <optgroup label="推荐（最新一代）">
+              <option value="qwen3.7-plus">qwen3.7-plus · 性能最强（推荐）</option>
+            </optgroup>
+            <optgroup label="均衡 / 快速（性价比）">
+              <option value="qwen3.6-plus">qwen3.6-plus · 均衡</option>
+              <option value="qwen3.6-flash">qwen3.6-flash · 快速低成本</option>
+              <option value="qwen3.5-flash">qwen3.5-flash · 性价比</option>
+            </optgroup>
+            <optgroup label="专项（物体定位）">
+              <option value="qwen3-vl-plus">qwen3-vl-plus · 2D/3D 定位</option>
+              <option value="qwen3-vl-flash">qwen3-vl-flash · 定位快速</option>
+            </optgroup>
+            <optgroup label="自定义">
+              <option value="__custom__">其它（手动输入）…</option>
+            </optgroup>
+          </select>
+          <input type="text" id="cfg_model_custom" placeholder="手动输入模型名" style="display:none; margin-top:4px;">
+          <div class="hint">⚠️ qwen-vl-max / qwen-vl-plus 将于 2026-07-13 下线，请用 qwen3.x 系列</div>
+        </div>
+        <div class="field">
+          <label>api_key <span class="val" id="cfg_keyhint"></span></label>
+          <input type="password" id="cfg_apikey" placeholder="留空=沿用已保存的 key" autocomplete="off">
+          <div class="hint" id="cfg_keyhint2">通过 OpenAI 兼容协议接入；本输入框只发送新值</div>
+        </div>
+        <div class="field">
+          <label><input type="checkbox" id="cfg_understand" checked> 启用 AI 理解层（POST /understand）</label>
+          <label><input type="checkbox" id="cfg_thinking"> 思考模式（Qwen3.x 深度推理；与 JSON 严格输出互斥，靠容错解析）</label>
+        </div>
+        <div class="action-row" style="margin-top:6px">
+          <button class="btn primary" id="saveVlmBtn">💾 保存配置</button>
+          <span class="val" id="cfg_status"></span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
 </script>
 </body>
 </html>
