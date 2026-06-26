@@ -386,3 +386,106 @@ def _parse_panel_boxes(
             "label": label,
         })
     return out
+
+
+# ---------------------------------------------------------------------------
+# VLM cut-line detection (used by POST /panels/vlm)
+#
+# Unlike split_panels_vlm (which asks the VLM for per-face boxes), this asks
+# directly for the CUT LINES — the horizontal y-coords and vertical x-coords
+# that separate faces. The output maps 1:1 onto the interactive tuning model
+# (candidates have pos + orientation), so there's no "box → line" reverse
+# engineering. Lower resolution (panels_vlm_max_side=512) is fine: cut lines
+# are a low-detail task (just the outlines), and the user drags them into place.
+# ---------------------------------------------------------------------------
+
+_CUT_LINES_PROMPT = """你是一位刀模图(die-line)结构专家。请观察这张图,找出所有的"切割线"(面板/面之间的分界线)。
+
+输出严格 JSON:
+{
+  "h_lines": [横切线的 y 坐标, 归一化 0.0-1.0, 从上到下],
+  "v_lines": [纵切线的 x 坐标, 归一化 0.0-1.0, 从左到右]
+}
+
+要求:
+- h_lines 是水平方向延伸的切割线(把图横向分割),只列它的 y 坐标(归一化比例)。
+- v_lines 是垂直方向延伸的切割线(把图纵向分割),只列它的 x 坐标(归一化比例)。
+- 只输出主要分界线;忽略糊口(glue tab)/插舌(tuck flap)/防尘翼等小附属结构的细线。
+- 坐标是相对整图的比例(0.0=最左/最上, 1.0=最右/最下)。
+- 不要输出贴边的线(即不要 0.0 或 1.0)。
+- 只输出 JSON 对象本身,不要任何解释文字、不要 markdown 代码围栏。"""
+
+
+def detect_cut_lines(
+    image_data: bytes, vlm: VLMProvider, settings: Settings, max_side: int | None = None
+) -> dict:
+    """VLM cut-line detection. Returns a dict with ``lines`` in original-image
+    pixel coords, plus ``width``/``height``/``model`` for the caller. Never
+    raises: on VLM/parse failure, ``lines`` is empty and ``error`` carries why.
+    """
+    from .tiling import load_image
+
+    img = load_image(image_data)  # HxWx3 RGB
+    orig_h, orig_w = img.shape[:2]
+    side = max_side if max_side is not None else settings.panels_vlm_max_side
+    data_url = _encode_for_vlm(img, max_side=side)
+
+    try:
+        raw, _conf = vlm.ask_image(
+            data_url, _CUT_LINES_PROMPT, max_tokens=512, json_mode=True
+        )
+    except Exception as exc:  # noqa: BLE001 — VLM best-effort
+        logger.warning("detect_cut_lines: VLM call failed: %s", exc)
+        return {
+            "width": orig_w, "height": orig_h, "count": 0, "lines": [],
+            "error": f"VLM 调用失败: {exc}", "model": getattr(vlm, "name", ""),
+        }
+
+    h_norm, v_norm = _parse_cut_lines(raw)
+    lines = [
+        {"pos": int(round(y * orig_h)), "orientation": "h", "confidence": 0.85}
+        for y in h_norm
+    ] + [
+        {"pos": int(round(x * orig_w)), "orientation": "v", "confidence": 0.85}
+        for x in v_norm
+    ]
+    return {
+        "width": orig_w, "height": orig_h, "count": len(lines),
+        "lines": lines, "raw": raw, "model": getattr(vlm, "name", ""),
+    }
+
+
+def _parse_cut_lines(raw: str) -> tuple[list[float], list[float]]:
+    """Parse VLM output into (h_lines, v_lines) normalized [0,1] lists.
+
+    Tolerant of markdown fences / leading prose. Drops values flush with the
+    border (< 2% or > 98%) — those would produce degenerate panels — and clamps
+    everything else to a safe interior range.
+    """
+    obj = _extract_json(raw)
+    if obj is None:
+        return [], []
+
+    def _norms(key: str) -> list[float]:
+        arr = obj.get(key)
+        if not isinstance(arr, list):
+            return []
+        out: list[float] = []
+        for v in arr:
+            try:
+                f = float(v)
+            except (TypeError, ValueError):
+                continue
+            f = max(0.0, min(1.0, f))
+            if f < 0.02 or f > 0.98:  # flush with border → drop
+                continue
+            out.append(f)
+        # De-dup near-equal (within 0.5%) and sort.
+        out.sort()
+        deduped: list[float] = []
+        for f in out:
+            if not deduped or abs(f - deduped[-1]) > 0.005:
+                deduped.append(f)
+        return deduped
+
+    return _norms("h_lines"), _norms("v_lines")
