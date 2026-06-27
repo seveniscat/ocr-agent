@@ -491,6 +491,76 @@
   </div>
 </div>
 
+<!-- VLM config modal (must be in DOM before the script binds listeners) -->
+<div class="modal-backdrop" id="vlmModal" onclick="if(event.target===this)closeVlmModal()">
+  <div class="modal">
+    <div class="modal-head">
+      <h3>VLM 配置</h3>
+      <button class="close" onclick="closeVlmModal()" aria-label="关闭">×</button>
+    </div>
+    <div class="modal-body">
+      <!-- Master switch: controls vlm_enabled (art-text fallback + understand/agent) -->
+      <div class="master-switch">
+        <div>
+          <div class="ms-label">● VLM 总开关</div>
+          <div class="ms-hint">关闭后 /analyze 不再做艺术字兜底，/understand、/agent/understand 返回 503</div>
+        </div>
+        <label class="toggle">
+          <input type="checkbox" id="cfg_vlm_enabled">
+          <span class="track"></span>
+        </label>
+      </div>
+
+      <div class="param-group" style="padding:0">
+        <div class="field">
+          <label>Provider</label>
+          <input type="text" value="qwen" disabled style="opacity:.6">
+          <div class="hint">OpenAI 兼容协议接入 DashScope / 自建端点（当前仅支持 qwen）</div>
+        </div>
+        <div class="field">
+          <label>base_url</label>
+          <input type="text" id="cfg_baseurl" placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1">
+        </div>
+        <div class="field">
+          <label>model</label>
+          <select id="cfg_model">
+            <optgroup label="推荐（最新一代）">
+              <option value="qwen3.7-plus">qwen3.7-plus · 性能最强（推荐）</option>
+            </optgroup>
+            <optgroup label="均衡 / 快速（性价比）">
+              <option value="qwen3.6-plus">qwen3.6-plus · 均衡</option>
+              <option value="qwen3.6-flash">qwen3.6-flash · 快速低成本</option>
+              <option value="qwen3.5-flash">qwen3.5-flash · 性价比</option>
+            </optgroup>
+            <optgroup label="专项（物体定位）">
+              <option value="qwen3-vl-plus">qwen3-vl-plus · 2D/3D 定位</option>
+              <option value="qwen3-vl-flash">qwen3-vl-flash · 定位快速</option>
+            </optgroup>
+            <optgroup label="自定义">
+              <option value="__custom__">其它（手动输入）…</option>
+            </optgroup>
+          </select>
+          <input type="text" id="cfg_model_custom" placeholder="手动输入模型名" style="display:none; margin-top:4px;">
+          <div class="hint">⚠️ qwen-vl-max / qwen-vl-plus 将于 2026-07-13 下线，请用 qwen3.x 系列</div>
+        </div>
+        <div class="field">
+          <label>api_key <span class="val" id="cfg_keyhint"></span></label>
+          <input type="password" id="cfg_apikey" placeholder="留空=沿用已保存的 key" autocomplete="off">
+          <div class="hint" id="cfg_keyhint2">通过 OpenAI 兼容协议接入；本输入框只发送新值</div>
+        </div>
+        <div class="field">
+          <label><input type="checkbox" id="cfg_understand" checked> 启用 AI 理解层（POST /understand）</label>
+          <label><input type="checkbox" id="cfg_thinking"> 思考模式（Qwen3.x 深度推理；与 JSON 严格输出互斥，靠容错解析）</label>
+        </div>
+        <div class="action-row" style="margin-top:6px">
+          <button class="btn primary" id="saveVlmBtn">💾 保存配置</button>
+          <span class="val" id="cfg_status"></span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <script>
 const $ = id => document.getElementById(id);
 
@@ -1372,76 +1442,7 @@ document.querySelectorAll('.tab').forEach(t=>{
 // init
 syncParamUI();
 loadVlmConfig();   // populate the VLM config panel from .env (key masked)
-<!-- VLM config modal (extracted from the inline #vlmConfig panel) -->
-<div class="modal-backdrop" id="vlmModal" onclick="if(event.target===this)closeVlmModal()">
-  <div class="modal">
-    <div class="modal-head">
-      <h3>VLM 配置</h3>
-      <button class="close" onclick="closeVlmModal()" aria-label="关闭">×</button>
-    </div>
-    <div class="modal-body">
-      <!-- Master switch: controls vlm_enabled (art-text fallback + understand/agent) -->
-      <div class="master-switch">
-        <div>
-          <div class="ms-label">● VLM 总开关</div>
-          <div class="ms-hint">关闭后 /analyze 不再做艺术字兜底，/understand、/agent/understand 返回 503</div>
-        </div>
-        <label class="toggle">
-          <input type="checkbox" id="cfg_vlm_enabled">
-          <span class="track"></span>
-        </label>
-      </div>
-
-      <div class="param-group" style="padding:0">
-        <div class="field">
-          <label>Provider</label>
-          <input type="text" value="qwen" disabled style="opacity:.6">
-          <div class="hint">OpenAI 兼容协议接入 DashScope / 自建端点（当前仅支持 qwen）</div>
-        </div>
-        <div class="field">
-          <label>base_url</label>
-          <input type="text" id="cfg_baseurl" placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1">
-        </div>
-        <div class="field">
-          <label>model</label>
-          <select id="cfg_model">
-            <optgroup label="推荐（最新一代）">
-              <option value="qwen3.7-plus">qwen3.7-plus · 性能最强（推荐）</option>
-            </optgroup>
-            <optgroup label="均衡 / 快速（性价比）">
-              <option value="qwen3.6-plus">qwen3.6-plus · 均衡</option>
-              <option value="qwen3.6-flash">qwen3.6-flash · 快速低成本</option>
-              <option value="qwen3.5-flash">qwen3.5-flash · 性价比</option>
-            </optgroup>
-            <optgroup label="专项（物体定位）">
-              <option value="qwen3-vl-plus">qwen3-vl-plus · 2D/3D 定位</option>
-              <option value="qwen3-vl-flash">qwen3-vl-flash · 定位快速</option>
-            </optgroup>
-            <optgroup label="自定义">
-              <option value="__custom__">其它（手动输入）…</option>
-            </optgroup>
-          </select>
-          <input type="text" id="cfg_model_custom" placeholder="手动输入模型名" style="display:none; margin-top:4px;">
-          <div class="hint">⚠️ qwen-vl-max / qwen-vl-plus 将于 2026-07-13 下线，请用 qwen3.x 系列</div>
-        </div>
-        <div class="field">
-          <label>api_key <span class="val" id="cfg_keyhint"></span></label>
-          <input type="password" id="cfg_apikey" placeholder="留空=沿用已保存的 key" autocomplete="off">
-          <div class="hint" id="cfg_keyhint2">通过 OpenAI 兼容协议接入；本输入框只发送新值</div>
-        </div>
-        <div class="field">
-          <label><input type="checkbox" id="cfg_understand" checked> 启用 AI 理解层（POST /understand）</label>
-          <label><input type="checkbox" id="cfg_thinking"> 思考模式（Qwen3.x 深度推理；与 JSON 严格输出互斥，靠容错解析）</label>
-        </div>
-        <div class="action-row" style="margin-top:6px">
-          <button class="btn primary" id="saveVlmBtn">💾 保存配置</button>
-          <span class="val" id="cfg_status"></span>
-        </div>
-      </div>
-    </div>
-  </div>
-</div>
-
 </script>
+
 </body>
 </html>
