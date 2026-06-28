@@ -7,12 +7,14 @@ from __future__ import annotations
 import pytest
 
 from app.config import Settings
+from app.ocr.aggregator import apply_paragraph_granularity
 from app.ocr.detector import (
     TextDetection,
     _quad_bbox,
     _x_overlap_ratio,
     merge_lines_to_paragraphs,
 )
+from app.schemas import Item
 
 
 def _line(x1, y1, x2, y2, text="x", conf=0.9):
@@ -132,6 +134,46 @@ def test_confidence_is_mean_of_lines():
     ]
     out = merge_lines_to_paragraphs(lines, gap_ratio=0.6, x_overlap=0.3)
     assert out[0].confidence == pytest.approx(0.7)
+
+
+def _item(x1, y1, x2, y2, text="x", conf=0.9):
+    poly = [[x1, y1], [x2, y1], [x2, y2], [x1, y2]]
+    return Item(
+        id="tmp",
+        type="text",
+        text=text,
+        polygon=poly,
+        bbox=[x1, y1, x2, y2],
+        confidence=conf,
+        source="paddleocr",
+        granularity="line",
+    )
+
+
+def test_apply_paragraph_granularity_merges_across_tile_like_lines():
+    # Two adjacent lines as if they came from different tiles — global merge
+    # should still combine them (per-tile merge could not).
+    items = [
+        _item(0, 91, 371, 118, "line one"),
+        _item(0, 124, 265, 153, "line two"),
+        Item(
+            id="tmp",
+            type="qr",
+            content="http://x",
+            polygon=[[500, 500], [550, 500], [550, 550], [500, 550]],
+            bbox=[500, 500, 550, 550],
+            confidence=1.0,
+            source="pyzbar",
+        ),
+    ]
+    out = apply_paragraph_granularity(items, gap_ratio=0.6, x_overlap=0.3)
+    texts = [it for it in out if it.type == "text"]
+    codes = [it for it in out if it.type == "qr"]
+    assert len(texts) == 1
+    assert texts[0].granularity == "paragraph"
+    assert texts[0].text == "line one\nline two"
+    assert len(texts[0].lines) == 2
+    assert len(codes) == 1
 
 
 # ---------------------------------------------------------------------------

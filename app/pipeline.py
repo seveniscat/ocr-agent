@@ -4,7 +4,8 @@ Flow:
     load image → plan grid → for each tile:
         detect text (polygon) → recognize → collect items
         detect qr/barcode → collect items
-    (after tiles) low-confidence text → VLM fallback
+    (after tiles) paragraph merge in global coords (when granularity=paragraph)
+    → low-confidence text → VLM fallback
     → map to global coords → dedupe (NMS) → annotate (optional) → return
 
 The pipeline is a thin coordinator: each stage lives in its own module so it
@@ -153,6 +154,10 @@ class Pipeline:
         else:
             predict_kwargs, gran, gap, xov = {}, None, None, None
 
+        effective_gran = gran or self.settings.ocr_granularity
+        # Paragraph merge runs globally after all tiles; OCR always emits lines.
+        ocr_gran = "line" if effective_gran == "paragraph" else effective_gran
+
         # Per-tile processing (the dominant cost on large images).
         t_ocr = time.perf_counter()
         for spec in specs:
@@ -162,9 +167,7 @@ class Pipeline:
             for det in ocr.detect_and_recognize(
                 tile,
                 predict_kwargs=predict_kwargs,
-                granularity=gran,
-                paragraph_gap_ratio=gap,
-                paragraph_x_overlap=xov,
+                granularity=ocr_gran,
             ):
                 global_poly = offset_polygon(det.polygon, spec.x0, spec.y0)
                 # if paragraph mode, offset the per-line quads too
@@ -212,6 +215,18 @@ class Pipeline:
                         "Code detection failed on tile %d, skipping: %s",
                         spec.index, exc,
                     )
+        if effective_gran == "paragraph":
+            from .ocr.aggregator import apply_paragraph_granularity
+
+            all_items = apply_paragraph_granularity(
+                all_items,
+                gap_ratio=gap
+                if gap is not None
+                else self.settings.ocr_paragraph_gap_ratio,
+                x_overlap=xov
+                if xov is not None
+                else self.settings.ocr_paragraph_x_overlap,
+            )
         t_ocr = time.perf_counter() - t_ocr
         n_after_ocr = len(all_items)
 

@@ -53,6 +53,11 @@
     fill: transparent; stroke: var(--text-color); stroke-width: 1.5;
     transition: stroke-width .1s, fill .1s;
   }
+  .canvas svg polygon.item-poly {
+    pointer-events: all;
+    cursor: pointer;
+    fill: rgba(0, 0, 0, 0.001);
+  }
   .canvas svg polygon.art { stroke: var(--art); }
   .canvas svg polygon.qr { stroke: var(--qr); }
   .canvas svg polygon.barcode { stroke: var(--barcode); }
@@ -189,6 +194,7 @@
   .toggle input:checked + .track::after { transform: translateX(18px); }
 
   .canvas svg rect.panel-box {
+    pointer-events: none;
     fill: rgba(79, 140, 255, .12); stroke: var(--accent); stroke-width: 2;
   }
   .canvas svg rect.panel-box.hl {
@@ -196,11 +202,13 @@
     filter: drop-shadow(0 0 4px var(--accent));
   }
   .canvas svg text.panel-num {
+    pointer-events: none;
     fill: #fff; font-size: 32px; font-weight: 700;
     paint-order: stroke; stroke: var(--accent); stroke-width: 2px;
   }
   /* AI understanding element boxes (key_elements, coarse VLM localization) */
   .canvas svg rect.und-box {
+    pointer-events: none;
     fill: rgba(99, 102, 241, .10); stroke: var(--und, #6366f1); stroke-width: 2;
     stroke-dasharray: 8 4;
   }
@@ -209,6 +217,7 @@
     filter: drop-shadow(0 0 5px var(--und, #6366f1));
   }
   .canvas svg text.und-lbl {
+    pointer-events: none;
     fill: #fff; font-size: 22px; font-weight: 600;
     paint-order: stroke; stroke: var(--und, #6366f1); stroke-width: 2px;
   }
@@ -223,8 +232,8 @@
   .canvas svg line.cutline.conf-low  { stroke: #888; opacity: .7; }
   .canvas svg line.cutline.dragging  { stroke: #fff; stroke-width: 5; opacity: 1; }
   .canvas svg rect.preview-panel {
-    fill: rgba(79,140,255,.06); stroke: rgba(79,140,255,.4); stroke-width: 1.5;
     pointer-events: none;
+    fill: rgba(79,140,255,.06); stroke: rgba(79,140,255,.4); stroke-width: 1.5;
   }
 
   /* split toolbar */
@@ -567,8 +576,21 @@ const $ = id => document.getElementById(id);
 // =========================================================================
 // pan-zoom viewer (unchanged logic)
 // =========================================================================
-const view = { iw:0, ih:0, scale:1, tx:0, ty:0, fitScale:1, minScale:0.05, maxScale:40, items:[], activeIdx:-1, panels:[], activePanel:-1, understanding:null, activeUndIdx:-1, candidates:[], splitMode:false, subject:null };
+const view = { iw:0, ih:0, scale:1, tx:0, ty:0, fitScale:1, minScale:0.05, maxScale:40, items:[], activeIdx:-1, selectedIdx:-1, panels:[], activePanel:-1, understanding:null, activeUndIdx:-1, candidates:[], splitMode:false, subject:null };
 const viewer = $('viewer'), canvas = $('canvas'), img = $('img'), svg = $('svg');
+
+// Item bbox clicks: delegate on the svg root (survives drawPolygons innerHTML rebuild).
+svg.addEventListener('mousedown', ev => {
+  if (ev.target.closest?.('polygon.item-poly')) ev.stopPropagation();
+});
+svg.addEventListener('click', ev => {
+  const poly = ev.target.closest?.('polygon.item-poly');
+  if (!poly) return;
+  ev.stopPropagation();
+  const idx = +poly.dataset.idx;
+  if (!Number.isFinite(idx)) return;
+  selectItem(idx, { scroll: true, switchTab: true });
+});
 
 function showImage(srcUrl) {
   $('emptyHint').style.display = 'none';
@@ -583,39 +605,95 @@ function showImage(srcUrl) {
   };
   img.src = srcUrl;
 }
-function drawPolygons() {
-  svg.innerHTML = '';
+
+function itemIsHighlighted(idx) {
+  return idx === view.activeIdx || idx === view.selectedIdx;
+}
+
+function syncItemListUI() {
+  $('pane-items').querySelectorAll('.item[data-idx]').forEach(el => {
+    el.classList.toggle('active', +el.dataset.idx === view.selectedIdx);
+  });
+}
+
+function scrollItemIntoView(idx) {
+  const el = $('pane-items').querySelector(`.item[data-idx="${idx}"]`);
+  if (el) el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+}
+
+function itemPolygonCenter(item) {
+  const poly = item?.polygon;
+  if (!poly || poly.length < 3) return null;
+  let sx = 0, sy = 0;
+  for (const p of poly) { sx += p[0]; sy += p[1]; }
+  return { x: sx / poly.length, y: sy / poly.length };
+}
+
+function panToItem(idx) {
+  const c = itemPolygonCenter(view.items[idx]);
+  if (!c || !view.iw) return;
+  const r = viewer.getBoundingClientRect();
+  view.tx = r.width / 2 - c.x * view.scale;
+  view.ty = r.height / 2 - c.y * view.scale;
+  setTransform();
+}
+
+function focusItemsTab() {
+  document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+  document.querySelector('.tab[data-tab=items]').classList.add('active');
+  document.querySelectorAll('.pane').forEach(p => p.classList.remove('active'));
+  $('pane-items').classList.add('active');
+}
+
+function selectItem(idx, { scroll = false, pan = false, switchTab = false } = {}) {
+  if (idx < 0 || idx >= view.items.length) return;
+  view.selectedIdx = idx;
+  syncItemListUI();
+  if (switchTab) focusItemsTab();
+  if (pan) panToItem(idx);
+  drawPolygons();
+  if (scroll) scrollItemIntoView(idx);
+}
+
+function bindItemPolygon(el, idx) {
+  el.classList.add('item-poly');
+  el.dataset.idx = String(idx);
+}
+
+function drawItemPolygons() {
   view.items.forEach((it, idx) => {
     if (!it.polygon || it.polygon.length < 3) return;
     const cls = it.type==='art_text'?'art':it.type==='qr'?'qr':it.type==='barcode'?'barcode':'';
-    // For paragraph granularity, draw per-line sub-boxes too (dashed) so the
-    // merged block is visually clear: solid outline = block, dashed = lines.
+    const hl = itemIsHighlighted(idx) ? ' hl' : '';
     if (it.granularity === 'paragraph' && it.lines && it.lines.length > 1) {
       it.lines.forEach(ln => {
         if (!ln || ln.length < 3) return;
         const sub = document.createElementNS('http://www.w3.org/2000/svg','polygon');
         sub.setAttribute('points', ln.map(p=>p[0].toFixed(1)+','+p[1].toFixed(1)).join(' '));
-        sub.setAttribute('class', cls);
-        sub.setAttribute('fill', 'none');
+        sub.setAttribute('class', cls + hl);
         sub.style.strokeDasharray = (4/view.scale).toFixed(2);
-        sub.dataset.idx = idx;
+        bindItemPolygon(sub, idx);
         svg.appendChild(sub);
       });
     }
-    // Main box (solid). For paragraph this is the merged block outline.
     const poly = document.createElementNS('http://www.w3.org/2000/svg','polygon');
     poly.setAttribute('points', it.polygon.map(p=>p[0].toFixed(1)+','+p[1].toFixed(1)).join(' '));
-    poly.setAttribute('class', cls + (idx===view.activeIdx?' hl':''));
-    poly.dataset.idx = idx;
+    poly.setAttribute('class', cls + hl);
+    bindItemPolygon(poly, idx);
     svg.appendChild(poly);
   });
-  svg.querySelectorAll('polygon').forEach(p=>{
+  svg.querySelectorAll('polygon.item-poly').forEach(p=>{
     const baseW = p.classList.contains('hl') ? 3 : 1.5;
     p.style.strokeWidth = (baseW/view.scale).toFixed(3);
   });
+}
+
+function drawPolygons() {
+  svg.innerHTML = '';
   drawPanelsOverlay();
   drawCandidatesOverlay();
   drawUnderstandingOverlay();
+  drawItemPolygons();
 }
 
 // Draw candidate/confirmed cut lines during interactive splitting.
@@ -810,10 +888,30 @@ function zoomAt(cx, cy, factor) {
   setTransform(); updateZoomVal(); drawPolygons();
 }
 viewer.addEventListener('wheel', e=>{ if(!view.iw)return; e.preventDefault(); zoomAt(e.clientX,e.clientY, e.deltaY<0?1.12:1/1.12); }, {passive:false});
-let dragging=false,lx=0,ly=0;
-viewer.addEventListener('mousedown',e=>{if(e.button!==0)return;dragging=true;lx=e.clientX;ly=e.clientY;viewer.classList.add('grabbing');});
-window.addEventListener('mousemove',e=>{if(!dragging)return;view.tx+=e.clientX-lx;view.ty+=e.clientY-ly;lx=e.clientX;ly=e.clientY;setTransform();});
-window.addEventListener('mouseup',()=>{dragging=false;viewer.classList.remove('grabbing');});
+const PAN_DRAG_PX = 5;
+let panSession = null;
+viewer.addEventListener('mousedown', e => {
+  if (e.button !== 0 || !view.iw) return;
+  if (e.target.closest?.('polygon.item-poly')) return;
+  panSession = { x0: e.clientX, y0: e.clientY, tx0: view.tx, ty0: view.ty, active: false };
+});
+window.addEventListener('mousemove', e => {
+  if (!panSession) return;
+  const dx = e.clientX - panSession.x0;
+  const dy = e.clientY - panSession.y0;
+  if (!panSession.active) {
+    if (Math.hypot(dx, dy) < PAN_DRAG_PX) return;
+    panSession.active = true;
+    viewer.classList.add('grabbing');
+  }
+  view.tx = panSession.tx0 + dx;
+  view.ty = panSession.ty0 + dy;
+  setTransform();
+});
+window.addEventListener('mouseup', () => {
+  if (panSession?.active) viewer.classList.remove('grabbing');
+  panSession = null;
+});
 viewer.addEventListener('dblclick',(e)=>{
   if (!view.iw) return;
   fit();
@@ -840,7 +938,11 @@ function syncParamUI() {
   $('p_gap').value = params.gap; $('v_gap').textContent = params.gap.toFixed(2);
   $('p_xov').value = params.xov; $('v_xov').textContent = params.xov.toFixed(2);
   document.querySelectorAll('#granSeg button').forEach(b=>b.classList.toggle('active', b.dataset.v===params.gran));
+  syncParaGroup();
   markChanged();
+}
+function syncParaGroup() {
+  $('paraGroup').style.display = params.gran === 'paragraph' ? '' : 'none';
 }
 function markChanged() {
   const changed = JSON.stringify(params) !== JSON.stringify(DEFAULTS);
@@ -867,14 +969,21 @@ $('p_orient').addEventListener('change', e=>{params.orient=e.target.checked;mark
 bind('p_gap','v_gap','gap', v=>v.toFixed(2));
 bind('p_xov','v_xov','xov', v=>v.toFixed(2));
 document.querySelectorAll('#granSeg button').forEach(b=>b.addEventListener('click',()=>{
-  params.gran = b.dataset.v; document.querySelectorAll('#granSeg button').forEach(x=>x.classList.toggle('active',x===b)); markChanged();
+  params.gran = b.dataset.v;
+  document.querySelectorAll('#granSeg button').forEach(x=>x.classList.toggle('active',x===b));
+  syncParaGroup();
+  markChanged();
 }));
 $('resetParams').onclick = () => { Object.assign(params, DEFAULTS); syncParamUI(); };
 
-// Build OCROptions JSON from current params (only send non-defaults; server
-// falls back to its own defaults for omitted fields).
+// Build OCROptions JSON for /analyze. Granularity is always sent explicitly;
+// paragraph knobs are sent whenever paragraph mode is active.
 function buildOptions() {
-  const o = {};
+  const o = { granularity: params.gran };
+  if (params.gran === 'paragraph') {
+    o.paragraph_gap_ratio = params.gap;
+    o.paragraph_x_overlap = params.xov;
+  }
   if (params.thresh !== DEFAULTS.thresh) o.text_det_thresh = params.thresh;
   if (params.box !== DEFAULTS.box) o.text_det_box_thresh = params.box;
   if (params.unclip !== DEFAULTS.unclip) o.text_det_unclip_ratio = params.unclip;
@@ -882,9 +991,6 @@ function buildOptions() {
   if (params.limittype !== DEFAULTS.limittype) o.text_det_limit_type = params.limittype;
   if (params.rec > 0) o.text_rec_score_thresh = params.rec;
   if (params.orient !== DEFAULTS.orient) o.use_textline_orientation = params.orient;
-  if (params.gran !== DEFAULTS.gran) o.granularity = params.gran;
-  if (params.gap !== DEFAULTS.gap) o.paragraph_gap_ratio = params.gap;
-  if (params.xov !== DEFAULTS.xov) o.paragraph_x_overlap = params.xov;
   return o;
 }
 
@@ -1313,6 +1419,7 @@ function handleFile(file) {
   $('filename').textContent = '📎 ' + file.name + ` (${(file.size/1024).toFixed(0)} KB)`;
   // Show image immediately, NO recognition yet.
   view.items = []; view.panels = []; view.candidates = []; view.splitMode = false; view.subject = null;
+  view.selectedIdx = -1; view.activeIdx = -1;
   $('splitToolbar').style.display = 'none';
   drawPolygons();
   showImage(currentObjectUrl);
@@ -1335,6 +1442,7 @@ function clearAll() {
   currentFile = null;
   if (currentObjectUrl) { URL.revokeObjectURL(currentObjectUrl); currentObjectUrl = null; }
   view.items = []; view.panels = []; view.understanding = null;
+  view.selectedIdx = -1; view.activeIdx = -1;
   view.candidates = []; view.splitMode = false; view.subject = null;
   $('splitToolbar').style.display = 'none';
   drawPolygons();
@@ -1358,10 +1466,15 @@ async function recognize() {
   const opt = buildOptions();
   const fd = new FormData();
   fd.append('file', currentFile);
-  if (Object.keys(opt).length) fd.append('options', JSON.stringify(opt));
+  fd.append('options', JSON.stringify(opt));
 
   $('recognizeBtn').disabled = true;
-  setStatus('识别中…','busy');
+  const t0 = performance.now();
+  let busyMsg = '识别中…';
+  let tick = null;
+  const refreshBusy = () => setStatus(`${busyMsg} · ${formatElapsed(performance.now() - t0)}`, 'busy');
+  tick = setInterval(refreshBusy, 200);
+  refreshBusy();
   try {
     let resp = await fetch('/analyze', { method:'POST', body: fd });
     let data;
@@ -1369,7 +1482,8 @@ async function recognize() {
       data = await resp.json();
       const tid = data.task_id;
       if (!tid) throw new Error('大图任务未返回 task_id');
-      setStatus(`大图异步处理中 (${tid.slice(0,8)}…)`, 'busy');
+      busyMsg = `大图异步处理中 (${tid.slice(0,8)}…)`;
+      refreshBusy();
       data = await pollTask(tid);
     } else if (!resp.ok) {
       const t = await resp.text(); throw new Error(`HTTP ${resp.status}: ${t.slice(0,200)}`);
@@ -1377,10 +1491,14 @@ async function recognize() {
       data = await resp.json();
     }
     render(data);
-    setStatus(`完成 · ${data.items.length} 项 · ${data.image_meta.tile_count} tile`, 'ok');
+    const elapsed = formatElapsed(performance.now() - t0);
+    const gran = data.options_used?.granularity || params.gran;
+    setStatus(`完成 · ${data.items.length} 项 · ${data.image_meta.tile_count} tile · ${gran} · ${elapsed}`, 'ok');
   } catch (err) {
-    setStatus('错误: '+err.message, 'error'); console.error(err);
+    setStatus(`错误: ${err.message} · ${formatElapsed(performance.now() - t0)}`, 'error');
+    console.error(err);
   } finally {
+    if (tick) clearInterval(tick);
     $('recognizeBtn').disabled = false;
   }
 }
@@ -1400,7 +1518,10 @@ async function pollTask(taskId) {
 }
 
 function render(data) {
-  view.items = data.items; drawPolygons();
+  view.items = data.items;
+  view.selectedIdx = -1;
+  view.activeIdx = -1;
+  drawPolygons();
   $('meta').textContent = `${data.image_meta.width}×${data.image_meta.height} · ${data.image_meta.tile_count} tile`;
   $('count').textContent = `(${data.items.length})`;
   const pane = $('pane-items'); pane.innerHTML = '';
@@ -1420,14 +1541,25 @@ function render(data) {
       </div>
       <div class="text">${escapeHtml(label)}</div>
       <div class="src">${it.source} · ${it.id}</div>`;
-    div.addEventListener('mouseenter', ()=>{view.activeIdx=idx;drawPolygons();});
-    div.addEventListener('mouseleave', ()=>{view.activeIdx=-1;drawPolygons();});
+    div.addEventListener('mouseenter', () => { view.activeIdx = idx; drawPolygons(); });
+    div.addEventListener('mouseleave', () => {
+      if (view.activeIdx === idx) { view.activeIdx = -1; drawPolygons(); }
+    });
+    div.addEventListener('click', () => selectItem(idx, { pan: true }));
     pane.appendChild(div);
   });
   $('jsonOut').textContent = JSON.stringify(data, null, 2);
 }
 function typeLabel(t){return {text:'文字',art_text:'艺术字',qr:'二维码',barcode:'条码'}[t]||t;}
 function escapeHtml(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function formatElapsed(ms) {
+  const s = ms / 1000;
+  if (s < 10) return s.toFixed(1) + 's';
+  if (s < 60) return Math.round(s) + 's';
+  const m = Math.floor(s / 60);
+  const rs = Math.round(s % 60);
+  return rs ? `${m}m ${rs}s` : `${m}m`;
+}
 function setStatus(msg,kind){const s=$('status');s.textContent=msg;s.className='status'+(kind?' '+kind:'');}
 
 document.querySelectorAll('.tab').forEach(t=>{
