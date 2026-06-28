@@ -13,6 +13,7 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 Granularity = Literal["word", "line", "paragraph"]
+OcrVersion = Literal["PP-OCRv6", "PP-OCRv5"]
 
 # Canonical project .env location (project root = parent of app/). config reads
 # from here and envstore writes to here, so edits made via the UI /config/vlm
@@ -66,6 +67,16 @@ class Settings(BaseSettings):
     rec_confidence_fallback: float = Field(
         0.6, ge=0.0, le=1.0,
         description="Recognition confidence below which we route the crop to the VLM",
+    )
+    ocr_version: OcrVersion = Field(
+        "PP-OCRv6",
+        description="PaddleOCR pipeline version. Default PP-OCRv6 loads "
+                    "PP-OCRv6_medium_det + PP-OCRv6_medium_rec (≈50-language rec).",
+    )
+    ocr_lang: str = Field(
+        "ch",
+        description="PaddleOCR lang tag. Default ch with PP-OCRv6 uses the "
+                    "multilingual medium rec pack (简中/繁中/英/日 + Latin).",
     )
 
     # ---- Output granularity (box level) ----

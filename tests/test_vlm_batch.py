@@ -151,8 +151,9 @@ def test_pipeline_vlm_fallback_uses_batch(monkeypatch):
 
     assert calls["batch"] == 1          # ONE batched call, not 2 serial
     assert n_crops == 2
-    # Suspects got the VLM text + art_text/vlm_fallback tags; the confident
-    # item is untouched.
-    assert out[0].text == "HELLO" and out[0].type == "art_text"
+    # Suspects got VLM text + source tag; type stays text (not art_text).
+    assert out[0].text == "HELLO" and out[0].type == "text"
+    assert out[0].source == "vlm_fallback"
     assert out[1].text == "ok"   and out[1].type == "text"      # unchanged
-    assert out[2].text == "WORLD" and out[2].type == "art_text"
+    assert out[2].text == "WORLD" and out[2].type == "text"
+    assert out[2].source == "vlm_fallback"

@@ -11,6 +11,7 @@ from app.ocr.aggregator import apply_paragraph_granularity
 from app.ocr.detector import (
     TextDetection,
     _quad_bbox,
+    _same_text_column,
     _x_overlap_ratio,
     merge_lines_to_paragraphs,
 )
@@ -91,6 +92,23 @@ def test_merge_requires_x_overlap():
     ]
     out = merge_lines_to_paragraphs(lines, gap_ratio=0.6, x_overlap=0.3)
     assert len(out) == 2
+
+
+def test_same_text_column_left_aligned():
+    a, b = (0, 100), (0, 80)  # same left edge, different widths
+    assert _same_text_column(a, b, x_overlap=0.3)
+
+
+def test_merge_left_aligned_varying_widths():
+    # Packaging-style block: same left edge, shorter last line.
+    lines = [
+        _line(50, 100, 350, 130, "line one"),
+        _line(50, 135, 280, 165, "line two"),
+        _line(50, 168, 220, 198, "line three"),
+    ]
+    out = merge_lines_to_paragraphs(lines, gap_ratio=0.6, x_overlap=0.3)
+    assert len(out) == 1
+    assert len(out[0].lines) == 3
 
 
 def test_merge_mixed_scenario():

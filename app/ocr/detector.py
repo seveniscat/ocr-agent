@@ -1,6 +1,8 @@
 """PaddleOCR wrapper: polygon detection + recognition per tile.
 
-Targets **PaddleOCR 3.x** (PP-OCRv6 pipeline).
+Targets **PaddleOCR 3.x** with **PP-OCRv6** by default
+(``PP-OCRv6_medium_det`` + ``PP-OCRv6_medium_rec``, single-model ≈50-language rec).
+Low-confidence crops are re-read by the VLM in ``pipeline._maybe_vlm_fallback``.
 
 Output granularity (controlled by ``Settings.ocr_granularity``):
 - ``word``      — per-token boxes. Uses PaddleOCR's native ``return_word_box``.
@@ -76,6 +78,27 @@ def _x_overlap_ratio(a, b) -> float:
     return inter / min_w if min_w > 0 else 0.0
 
 
+def _same_text_column(a, b, x_overlap: float) -> bool:
+    """True when two lines plausibly belong to one copy block (same column).
+
+    Packaging paragraphs are often left-aligned with varying line lengths, so
+    strict x-range overlap rejects valid merges. Fall back to left-edge or
+    center alignment when vertical gap is already small.
+    """
+    if _x_overlap_ratio(a, b) >= x_overlap:
+        return True
+    wa, wb = a[1] - a[0], b[1] - b[0]
+    avg_w = (wa + wb) / 2 or 1.0
+    # Left-aligned block (common on dielines).
+    if abs(a[0] - b[0]) <= 0.12 * avg_w:
+        return True
+    # Center-aligned multi-line titles.
+    ca, cb = (a[0] + a[1]) / 2, (b[0] + b[1]) / 2
+    if abs(ca - cb) <= 0.15 * avg_w:
+        return True
+    return False
+
+
 def merge_lines_to_paragraphs(
     line_dets: list[TextDetection],
     gap_ratio: float,
@@ -85,7 +108,7 @@ def merge_lines_to_paragraphs(
 
     Two adjacent lines merge when:
       - vertical gap between them <= ``gap_ratio * average_line_height``, AND
-      - their x-ranges overlap by >= ``x_overlap`` of the narrower line.
+      - they sit in the same text column (x-overlap OR left/center alignment).
     A line that matches nothing stays its own (single-line) block.
 
     Lines are first sorted top-to-bottom; we sweep once, so complexity is O(n).
@@ -119,9 +142,8 @@ def merge_lines_to_paragraphs(
         this_height = y2 - y1
         avg_h = (prev_height + this_height) / 2 or 1.0
         this_xrange = (x1, x2)
-        if (
-            gap <= gap_ratio * avg_h
-            and _x_overlap_ratio(prev_xrange, this_xrange) >= x_overlap
+        if gap <= gap_ratio * avg_h and _same_text_column(
+            prev_xrange, this_xrange, x_overlap
         ):
             current.append(det)
         else:
@@ -179,9 +201,13 @@ class OCREngine:
             ) from exc
 
         s = self.settings
-        logger.info("Loading PaddleOCR 3.x (PP-OCRv6)…")
+        logger.info(
+            "Loading PaddleOCR 3.x (version=%s, lang=%s)…",
+            s.ocr_version, s.ocr_lang,
+        )
         self._ocr = PaddleOCR(
-            lang="ch",
+            lang=s.ocr_lang,
+            ocr_version=s.ocr_version,
             use_doc_orientation_classify=False,  # dielines are upright
             use_doc_unwarping=False,             # we tile ourselves
             use_textline_orientation=True,       # rotated text on packaging
@@ -195,8 +221,10 @@ class OCREngine:
             return_word_box=(s.ocr_granularity == "word"),
         )
         logger.info(
-            "PaddleOCR ready. granularity=%s det_thresh=%.2f unclip=%.1f",
-            s.ocr_granularity, s.ocr_threshold, s.ocr_unclip_ratio,
+            "PaddleOCR ready: version=%s lang=%s granularity=%s "
+            "det_thresh=%.2f unclip=%.1f",
+            s.ocr_version, s.ocr_lang, s.ocr_granularity,
+            s.ocr_threshold, s.ocr_unclip_ratio,
         )
 
     def detect_and_recognize(

@@ -215,9 +215,19 @@ class Pipeline:
                         "Code detection failed on tile %d, skipping: %s",
                         spec.index, exc,
                     )
+        t_ocr = time.perf_counter() - t_ocr
+        n_after_ocr = len(all_items)
+
+        # --- dedupe at line level before paragraph merge (tile-seam duplicates
+        # break geometric grouping if left in place). ---
+        t_dedup = time.perf_counter()
+        all_items = dedupe_items(all_items)
         if effective_gran == "paragraph":
             from .ocr.aggregator import apply_paragraph_granularity
 
+            n_lines = sum(
+                1 for it in all_items if it.type == "text" and it.source == "paddleocr"
+            )
             all_items = apply_paragraph_granularity(
                 all_items,
                 gap_ratio=gap
@@ -227,16 +237,25 @@ class Pipeline:
                 if xov is not None
                 else self.settings.ocr_paragraph_x_overlap,
             )
-        t_ocr = time.perf_counter() - t_ocr
-        n_after_ocr = len(all_items)
+            n_blocks = sum(
+                1
+                for it in all_items
+                if it.granularity == "paragraph" and it.type == "text"
+            )
+            logger.info(
+                "paragraph merge: %d lines -> %d blocks (gap=%.2f x_ov=%.2f)",
+                n_lines,
+                n_blocks,
+                gap if gap is not None else self.settings.ocr_paragraph_gap_ratio,
+                xov if xov is not None else self.settings.ocr_paragraph_x_overlap,
+            )
 
         # --- VLM fallback for low-confidence / suspicious text ---
         t_vlm, vlm_calls = time.perf_counter(), 0
         all_items, vlm_calls = self._maybe_vlm_fallback(img, all_items)
         t_vlm = time.perf_counter() - t_vlm
 
-        # --- merge duplicates across tile seams ---
-        t_dedup = time.perf_counter()
+        # --- final dedupe (paragraph blocks can still overlap at tile seams) ---
         all_items = dedupe_items(all_items)
         all_items = renumber(all_items, prefix="t")
         t_dedup = time.perf_counter() - t_dedup
@@ -285,6 +304,9 @@ class Pipeline:
         recognized text back into the items. Geometry (polygon/bbox) stays from
         the expert detector — the VLM only supplies text.
 
+        Items stay ``type=text`` (not ``art_text``): art_text is for stylized
+        glyphs; VLM here is a confidence booster (e.g. wrong Paddle lang model).
+
         Returns ``(items, n_crops)``: ``n_crops`` is the number of crops sent
         (not the number of API calls), so the timing log still shows how many
         suspicious regions were inspected. The actual speedup is in the API
@@ -325,7 +347,6 @@ class Pipeline:
                     update={
                         "text": new_text,
                         "confidence": max(out[idx].confidence, new_conf),
-                        "type": "art_text",
                         "source": "vlm_fallback",
                     }
                 )

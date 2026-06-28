@@ -127,8 +127,8 @@ curl http://10.1.93.196:8000/tasks/f32332e8...
 
 | `type` | 含义 | 内容字段 | 来源 |
 |--------|------|----------|------|
-| `text` | 普通文字 | `text` | PaddleOCR |
-| `art_text` | 艺术字(置信度低,VLM 兜底重认) | `text` | `vlm_fallback` |
+| `text` | 普通文字 | `text` | `paddleocr` / `vlm_fallback` |
+| `art_text` | 艺术字（预留；低置信 VLM 重认现标记为 `text` + `vlm_fallback`） | `text` | — |
 | `qr` | 二维码 | `content` | pyzbar |
 | `barcode` | 条码 | `content` | pyzbar |
 
