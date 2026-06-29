@@ -2,7 +2,8 @@
 
 Targets **PaddleOCR 3.x** with **PP-OCRv6** by default
 (``PP-OCRv6_medium_det`` + ``PP-OCRv6_medium_rec``, single-model ≈50-language rec).
-Low-confidence crops are re-read by the VLM in ``pipeline._maybe_vlm_fallback``.
+Low-confidence crops are re-read by the VLM only when
+``vlm_ocr_fallback_enabled`` is set (opt-in; default off).
 
 Output granularity (controlled by ``Settings.ocr_granularity``):
 - ``word``      — per-token boxes. Uses PaddleOCR's native ``return_word_box``.

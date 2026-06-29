@@ -24,8 +24,15 @@ from app.tiling import (
 # ---------------------------------------------------------------------------
 
 
+def test_sub_4000_long_edge_single_tile():
+    """v1 scope: long edge ≤ 4000 → one tile (direct predict, no seam dedupe)."""
+    grid = plan_grid(3500, 2800, target_size=3500, overlap=0.15)
+    assert grid.count == 1
+    assert not grid.needs_tiling
+
+
 def test_small_image_single_tile():
-    grid = plan_grid(1200, 800, target_size=1600, overlap=0.15)
+    grid = plan_grid(1200, 800, target_size=4000, overlap=0.15)
     assert grid.count == 1
     assert grid.needs_tiling is False
     specs = tile_specs(grid)
@@ -179,3 +186,27 @@ def test_dedupe_disjoint_kept():
         _item("b", "world", [500, 500, 600, 540]),
     ]
     assert len(dedupe_items(items)) == 2
+
+
+def test_dedupe_drops_tile_seam_text_fragment():
+    """Full line + trailing fragment at tile seam → keep the longer text."""
+    full = (
+        "Nessun personaggio duplicato all'interno della scatola completa."
+    )
+    items = [
+        _item("full", full, [547, 830, 1107, 852], conf=0.998),
+        _item("frag", "completa.", [1017, 827, 1110, 855], conf=0.999),
+    ]
+    out = dedupe_items(items)
+    assert len(out) == 1
+    assert out[0].text == full
+
+
+def test_dedupe_official_seam_merge_same_text():
+    """Adjacent seam boxes within merge_x/y thres with same text → one item."""
+    items = [
+        _item("a", "hello world", [100, 100, 200, 130], conf=0.9),
+        _item("b", "hello world", [198, 101, 280, 131], conf=0.85),
+    ]
+    out = dedupe_items(items, merge_x_thres=50, merge_y_thres=35)
+    assert len(out) == 1

@@ -118,13 +118,30 @@ def test_batch_empty_input_returns_empty():
 # ---------------------------------------------------------------------------
 
 
+def test_pipeline_vlm_fallback_skipped_by_default():
+    """OCR path is PaddleOCR-only unless both VLM switches are enabled."""
+    pipe = Pipeline(Settings())
+    items = [
+        Item(
+            id="t1", type="text", text="?", polygon=[[10, 10], [30, 10], [30, 30], [10, 30]],
+            bbox=[10, 10, 30, 30], confidence=0.1, source="paddleocr",
+        ),
+    ]
+    out, n_crops = pipe._maybe_vlm_fallback(_img(), items)
+    assert n_crops == 0
+    assert out[0].source == "paddleocr"
+
+
 def test_pipeline_vlm_fallback_uses_batch(monkeypatch):
     """_maybe_vlm_fallback collects suspects and calls recognize_crops_batch once."""
     pipe = Pipeline(Settings())
 
-    # Force-enable VLM and set a high threshold so the items below qualify.
-    s = pipe.settings.model_copy(update={"vlm_enabled": True,
-                                         "rec_confidence_fallback": 0.99})
+    # Force-enable both VLM switches and a high threshold so items qualify.
+    s = pipe.settings.model_copy(update={
+        "vlm_enabled": True,
+        "vlm_ocr_fallback_enabled": True,
+        "rec_confidence_fallback": 0.99,
+    })
     pipe.settings = s
 
     # Two suspect items + one confident one (should NOT be re-recognized).

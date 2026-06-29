@@ -27,15 +27,28 @@ class Settings(BaseSettings):
         env_file=str(ENV_PATH), env_prefix="OCR_", extra="ignore"
     )
 
-    # ---- Tiling ----
+    # ---- Tiling (v1 scope: long edge ≤ 4000px → single PaddleOCR predict) ----
     tile_target_size: int = Field(
-        1600, description="Target long-edge px of each tile"
+        4000,
+        description="Target long-edge px of each tile when tiling is required "
+                    "(long edge > small_image_threshold).",
     )
     tile_overlap: float = Field(
         0.15, ge=0.0, lt=0.5, description="Overlap ratio between adjacent tiles"
     )
+    tile_merge_x_thres: int = Field(
+        50, ge=1, le=500,
+        description="[dedupe] PaddleOCR slice-style horizontal merge threshold (px). "
+                    "Adjacent seam boxes within this distance merge.",
+    )
+    tile_merge_y_thres: int = Field(
+        35, ge=1, le=500,
+        description="[dedupe] PaddleOCR slice-style vertical merge threshold (px).",
+    )
     small_image_threshold: int = Field(
-        2000, description="Images with both dims below this skip tiling"
+        4000,
+        description="Long edge ≤ this → one tile, direct PaddleOCR.predict() on "
+                    "the full image (current product scope).",
     )
 
     # ---- OCR detection tuning (DB++ text detector) ----
@@ -55,9 +68,10 @@ class Settings(BaseSettings):
                     "boxes (helps catch art text whose glyphs bleed past the shrink map).",
     )
     ocr_det_limit_side_len: int = Field(
-        960, ge=320, le=4096,
+        1216, ge=320, le=4096,
         description="DB detector resizes the long edge to this before inference. "
-                    "Larger → sharper small text but more memory.",
+                    "1216 is the PaddleOCR 3.x recommendation for higher-res inputs "
+                    "(≤4000px long edge, single-tile path).",
     )
     ocr_det_limit_type: Literal["max", "min"] = Field(
         "max",
@@ -66,7 +80,8 @@ class Settings(BaseSettings):
     )
     rec_confidence_fallback: float = Field(
         0.6, ge=0.0, le=1.0,
-        description="Recognition confidence below which we route the crop to the VLM",
+        description="[vlm_ocr_fallback] Recognition confidence below which a crop "
+                    "may be re-read by the VLM (only when fallback is enabled).",
     )
     ocr_version: OcrVersion = Field(
         "PP-OCRv6",
@@ -99,14 +114,23 @@ class Settings(BaseSettings):
                     "x-ranges) for two vertically-adjacent lines to merge.",
     )
 
-    # ---- VLM fallback ----
+    # ---- VLM (opt-in cloud vision; OCR path is PaddleOCR-only by default) ----
     # NOTE: model defaults to qwen3.7-plus — qwen-vl-max / qwen-vl-plus are
     # scheduled for deprecation on 2026-07-13 (DashScope notice 118178). The
     # OpenAI-compatible endpoint and our code are unchanged; only the model
     # name moved. Qwen3.x supports an optional "thinking" mode (deep reasoning
     # before answering) — useful for future QA reasoning, but disabled by
     # default because it can't combine with response_format=json_object.
-    vlm_enabled: bool = True
+    vlm_enabled: bool = Field(
+        False,
+        description="Master switch for cloud VLM endpoints (/understand, /agent, "
+                    "/panels/vlm). OCR analyze does not require this.",
+    )
+    vlm_ocr_fallback_enabled: bool = Field(
+        False,
+        description="Re-read low-confidence PaddleOCR crops via VLM during "
+                    "POST /analyze. Requires vlm_enabled + API key.",
+    )
     vlm_provider: str = "qwen"
     vlm_api_key: str = ""
     vlm_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
@@ -126,9 +150,9 @@ class Settings(BaseSettings):
     # art text. Level-1 = one whole-image call; per-panel calls are a future
     # extension (level 2).
     understand_enabled: bool = Field(
-        True,
+        False,
         description="Toggle the AI understanding layer (POST /understand). "
-                    "Disable if you don't want any whole-image VLM calls.",
+                    "Requires vlm_enabled + API key.",
     )
     understand_max_side: int = Field(
         1080, ge=256, le=4096,

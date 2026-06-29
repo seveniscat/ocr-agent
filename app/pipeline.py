@@ -1,12 +1,10 @@
 """Pipeline orchestration.
 
-Flow:
-    load image → plan grid → for each tile:
-        detect text (polygon) → recognize → collect items
-        detect qr/barcode → collect items
-    (after tiles) paragraph merge in global coords (when granularity=paragraph)
-    → low-confidence text → VLM fallback
-    → map to global coords → dedupe (NMS) → annotate (optional) → return
+Flow (v1 scope: long edge ≤ 4000px):
+    load image → [optional autocrop]
+    → if long edge ≤ 4000: single PaddleOCR.predict() on full image
+    → else: tile grid (future / >4000 async path)
+    → optional paragraph merge → optional VLM fallback → dedupe → return
 
 The pipeline is a thin coordinator: each stage lives in its own module so it
 can be swapped or unit-tested independently.
@@ -133,9 +131,16 @@ class Pipeline:
             h, w = img.shape[:2]
         t_pre = time.perf_counter() - t_pre
 
+        max_side = max(w, h)
+        # ≤ small_image_threshold (default 4000): one tile → official predict() path.
+        target_size = (
+            max_side
+            if max_side <= self.settings.small_image_threshold
+            else self.settings.tile_target_size
+        )
         grid = plan_grid(
             w, h,
-            target_size=self.settings.tile_target_size,
+            target_size=target_size,
             overlap=self.settings.tile_overlap,
         )
         specs = tile_specs(grid)
@@ -221,7 +226,13 @@ class Pipeline:
         # --- dedupe at line level before paragraph merge (tile-seam duplicates
         # break geometric grouping if left in place). ---
         t_dedup = time.perf_counter()
-        all_items = dedupe_items(all_items)
+        merge_x = self.settings.tile_merge_x_thres
+        merge_y = self.settings.tile_merge_y_thres
+        all_items = dedupe_items(
+            all_items,
+            merge_x_thres=merge_x,
+            merge_y_thres=merge_y,
+        )
         if effective_gran == "paragraph":
             from .ocr.aggregator import apply_paragraph_granularity
 
@@ -250,13 +261,17 @@ class Pipeline:
                 xov if xov is not None else self.settings.ocr_paragraph_x_overlap,
             )
 
-        # --- VLM fallback for low-confidence / suspicious text ---
+        # --- optional VLM fallback (opt-in; PaddleOCR is the default OCR path) ---
         t_vlm, vlm_calls = time.perf_counter(), 0
         all_items, vlm_calls = self._maybe_vlm_fallback(img, all_items)
         t_vlm = time.perf_counter() - t_vlm
 
         # --- final dedupe (paragraph blocks can still overlap at tile seams) ---
-        all_items = dedupe_items(all_items)
+        all_items = dedupe_items(
+            all_items,
+            merge_x_thres=merge_x,
+            merge_y_thres=merge_y,
+        )
         all_items = renumber(all_items, prefix="t")
         t_dedup = time.perf_counter() - t_dedup
 
@@ -312,7 +327,7 @@ class Pipeline:
         suspicious regions were inspected. The actual speedup is in the API
         call count, which is ~⌈n_crops / batch_size⌉ instead of n_crops.
         """
-        if not self.settings.vlm_enabled:
+        if not self.settings.vlm_enabled or not self.settings.vlm_ocr_fallback_enabled:
             return items, 0
         try:
             vlm = self._get_vlm()

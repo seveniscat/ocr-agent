@@ -311,6 +311,7 @@ result = ocr(image_url="http://...", options={
 | `OCR_LARGE_IMAGE_THRESHOLD` | 4000 | 长边超过此值走异步 |
 | `OCR_URL_FETCH_TIMEOUT` | 30 | URL 下载超时(秒) |
 | `OCR_URL_FETCH_MAX_BYTES` | 104857600 | URL 下载大小上限(100MB) |
-| `OCR_VLM_ENABLED` | true | 是否启用艺术字 VLM 兜底 |
+| `OCR_VLM_ENABLED` | false | 云 VLM 总开关（/understand、/agent、/panels/vlm） |
+| `OCR_VLM_OCR_FALLBACK_ENABLED` | false | `/analyze` 低置信 VLM 重认（需总开关 + key） |
 
 完整配置见 `.env.example`。

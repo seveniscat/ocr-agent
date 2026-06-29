@@ -6,8 +6,10 @@ internally too). Here we:
 1. Compute a grid of overlapping tiles from the original image.
 2. Yield ``(tile_index, tile_pixels, offset)`` so downstream detectors can run
    per-tile, then add ``offset`` back to map local coords to image coords.
-3. Merge duplicate detections that fell in the overlap region (polygon IoU
-   NMS + text similarity).
+3. Merge duplicate detections that fell in the overlap region using
+   PaddleOCR's ``merge_fragmented`` pixel-distance rules (``merge_x_thres`` /
+   ``merge_y_thres``), plus containment / substring suppression for seam
+   fragments (e.g. a full line in tile 0 + trailing word in tile 1).
 
 Coordinate convention: a *local* point ``(x, y)`` in a tile at ``offset=(dx, dy)``
 maps to the global image point ``(x + dx, y + dy)``.
@@ -187,18 +189,23 @@ def bbox_iou(a: list[float], b: list[float]) -> float:
     return inter / (area_a + area_b - inter)
 
 
+def _bbox_area(bbox: list[float]) -> float:
+    x1, y1, x2, y2 = bbox
+    return max(0.0, x2 - x1) * max(0.0, y2 - y1)
+
+
+def _bbox_extents(bbox: list[float]) -> tuple[float, float, float, float]:
+    x1, y1, x2, y2 = bbox
+    return x1, x2, y1, y2
+
+
 # ---------------------------------------------------------------------------
-# Cross-tile deduplication
+# Cross-tile deduplication (PaddleOCR merge_fragmented + containment)
 # ---------------------------------------------------------------------------
 
 
 def _text_similarity(a: str | None, b: str | None) -> float:
-    """Normalised Damerau-ish similarity in [0,1]. Cheap and dependency-free.
-
-    We use a normalised Levenshtein ratio: ``1 - dist/max_len``.
-    For our purpose (merge near-duplicate OCR lines across an overlap seam),
-    crude is fine — we only call this when two boxes already overlap heavily.
-    """
+    """Normalised Levenshtein ratio in [0,1]."""
     a = (a or "").strip()
     b = (b or "").strip()
     if not a and not b:
@@ -207,7 +214,6 @@ def _text_similarity(a: str | None, b: str | None) -> float:
         return 0.0
     if a == b:
         return 1.0
-    # Levenshtein DP.
     m, n = len(a), len(b)
     if m > n:
         a, b = b, a
@@ -224,23 +230,131 @@ def _text_similarity(a: str | None, b: str | None) -> float:
     return 1.0 - dist / max(m, n)
 
 
+def _text_is_substring_part(a: str | None, b: str | None) -> bool:
+    """True when the shorter non-empty string appears inside the longer one."""
+    a = (a or "").strip()
+    b = (b or "").strip()
+    if not a or not b:
+        return False
+    if len(a) <= len(b):
+        short, long = a, b
+    else:
+        short, long = b, a
+    return short in long
+
+
+def _boxes_mergeable_official(
+    bbox_a: list[float],
+    bbox_b: list[float],
+    merge_x_thres: float,
+    merge_y_thres: float,
+) -> bool:
+    """PaddleOCR ``merge_boxes`` rule on axis-aligned bboxes (either order).
+
+    See PaddleOCR ``tools/infer/utility.py``: two boxes on the same text line
+  merge when their y-extents are within ``merge_y_thres`` and their x-edges are
+    within ``merge_x_thres`` (adjacent seam fragments).
+    """
+    min_x1, max_x1, min_y1, max_y1 = _bbox_extents(bbox_a)
+    min_x2, max_x2, min_y2, max_y2 = _bbox_extents(bbox_b)
+    y_ok = (
+        abs(min_y1 - min_y2) <= merge_y_thres
+        and abs(max_y1 - max_y2) <= merge_y_thres
+    )
+    if not y_ok:
+        return False
+    x_gap = min(abs(max_x1 - min_x2), abs(max_x2 - min_x1))
+    return x_gap <= merge_x_thres
+
+
+def _bbox_contained_ratio(inner: list[float], outer: list[float]) -> float:
+    """Fraction of ``inner`` area that lies inside ``outer``."""
+    ix1, iy1 = max(inner[0], outer[0]), max(inner[1], outer[1])
+    ix2, iy2 = min(inner[2], outer[2]), min(inner[3], outer[3])
+    iw, ih = max(0.0, ix2 - ix1), max(0.0, iy2 - iy1)
+    inter = iw * ih
+    inner_area = _bbox_area(inner)
+    if inner_area <= 0.0:
+        return 0.0
+    return inter / inner_area
+
+
+def _should_merge_items(
+    a: Item,
+    b: Item,
+    merge_x_thres: float,
+    merge_y_thres: float,
+    text_threshold: float,
+) -> bool:
+    """True when ``b`` is a duplicate / fragment of ``a`` and should be dropped."""
+    if a.type != b.type:
+        return False
+
+    ta = a.text or a.content
+    tb = b.text or b.content
+    no_text = not ta and not tb
+
+    # 1) Official seam merge (geometry only — codes or identical OCR noise).
+    if _boxes_mergeable_official(a.bbox, b.bbox, merge_x_thres, merge_y_thres):
+        if no_text:
+            return True
+        if ta and tb and _text_similarity(ta, tb) >= text_threshold:
+            return True
+
+    # 2) Containment: smaller box inside larger on the same line + text substring.
+    area_a, area_b = _bbox_area(a.bbox), _bbox_area(b.bbox)
+    if area_a > 0 and area_b > 0:
+        if area_a >= area_b:
+            outer, inner, outer_t, inner_t = a, b, ta, tb
+        else:
+            outer, inner, outer_t, inner_t = b, a, tb, ta
+        contain = _bbox_contained_ratio(inner.bbox, outer.bbox)
+        min_xo, max_xo, min_yo, max_yo = _bbox_extents(outer.bbox)
+        min_xi, max_xi, min_yi, max_yi = _bbox_extents(inner.bbox)
+        y_aligned = (
+            abs(min_yo - min_yi) <= merge_y_thres
+            and abs(max_yo - max_yi) <= merge_y_thres
+        )
+        x_inside = (
+            min_xi >= min_xo - merge_x_thres
+            and max_xi <= max_xo + merge_x_thres
+        )
+        if y_aligned and (contain >= 0.75 or x_inside):
+            if no_text:
+                return True
+            if outer_t and inner_t and _text_is_substring_part(inner_t, outer_t):
+                return True
+
+    # 3) High-IoU near-duplicate (legacy path for same-text tile overlap).
+    if bbox_iou(a.bbox, b.bbox) >= 0.5:
+        if no_text:
+            return True
+        if ta and tb and _text_similarity(ta, tb) >= text_threshold:
+            return True
+
+    return False
+
+
 def dedupe_items(
     items: list[Item],
-    iou_threshold: float = 0.5,
+    merge_x_thres: float = 50.0,
+    merge_y_thres: float = 35.0,
     text_threshold: float = 0.6,
 ) -> list[Item]:
-    """Greedy NMS across tiles, with text-similarity confirmation.
+    """Merge cross-tile duplicates using PaddleOCR slice merge thresholds.
 
-    Two items merge when their bboxes overlap above ``iou_threshold`` **and**
-    (their texts are similar above ``text_threshold``, OR at least one has no
-    text — e.g. code regions where geometry alone is the signal). The survivor
-    keeps the higher-confidence item's metadata.
+    Survivor priority for text items: longer text (substring cases) → larger
+    bbox → higher confidence. This keeps the full-line detection when a tile
+    seam also produced a trailing fragment (``completa.`` inside a full sentence).
     """
     if len(items) <= 1:
         return list(items)
 
-    # Sort by confidence desc so the best representative survives.
-    order = sorted(range(len(items)), key=lambda i: items[i].confidence, reverse=True)
+    def _sort_key(it: Item) -> tuple:
+        text = (it.text or it.content or "")
+        return (len(text), _bbox_area(it.bbox), it.confidence)
+
+    order = sorted(range(len(items)), key=lambda i: _sort_key(items[i]), reverse=True)
     suppressed = [False] * len(items)
     out: list[Item] = []
 
@@ -254,16 +368,13 @@ def dedupe_items(
                 continue
             j = order[j_pos]
             item_j = items[j]
-            iou = bbox_iou(item_i.bbox, item_j.bbox)
-            if iou < iou_threshold:
-                continue
-            sim = _text_similarity(
-                item_i.text or item_i.content, item_j.text or item_j.content
-            )
-            no_text = not (item_i.text or item_i.content) and not (
-                item_j.text or item_j.content
-            )
-            if sim >= text_threshold or no_text:
+            if _should_merge_items(
+                item_i,
+                item_j,
+                merge_x_thres,
+                merge_y_thres,
+                text_threshold,
+            ):
                 suppressed[j_pos] = True
     return out
 
