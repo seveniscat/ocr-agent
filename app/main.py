@@ -1,9 +1,11 @@
 """FastAPI entry point.
 
-Two endpoints + healthz:
+Endpoints:
 - ``POST /analyze``: multipart upload. Small images return synchronously;
   large images return ``202`` with a ``task_id`` (polled via ``/tasks/{id}``).
 - ``GET  /tasks/{id}``: poll an async task.
+- ``POST /verify``: OCR the image, then check its text against a standard-copy
+  list (deterministic rule-based; returns matched/partial/missing per entry).
 
 Run locally: ``uvicorn app.main:app --reload``
 """
@@ -39,6 +41,8 @@ from .schemas import (
     PanelsResponse,
     TaskStatus,
     UnderstandingResult,
+    VerifyEntry,
+    VerifyReport,
     VlmPanelsResponse,
 )
 
@@ -549,6 +553,107 @@ def _get_understand_vlm():
                 "Set OCR_VLM_API_KEY / OCR_VLM_ENABLED."
             ),
         ) from exc
+
+
+@app.post("/verify", response_model=VerifyReport)
+async def verify(
+    file: UploadFile | None = File(None, description="Image upload (mutually exclusive with 'url')."),
+    url: str | None = Form(None, description="Image URL to download (used when 'file' is absent)."),
+    standard: str = Form(
+        ...,
+        description='JSON array of standard-copy entries, each '
+                    '{"text":"净含量450g","required":true,"category":"净含量"}. '
+                    'id is optional (auto-assigned v1/v2…). required defaults true; '
+                    'category optional. Empty array is a 400.',
+    ),
+    options: str | None = Form(
+        None,
+        description='JSON string of OCROptions overrides, same as /analyze '
+                    '(e.g. {"text_det_thresh":0.2,"granularity":"line"}).',
+    ),
+) -> JSONResponse:
+    """Verify the text on a packaging image against a standard-copy list.
+
+    Runs the OCR pipeline (same as ``/analyze``) then compares each standard
+    entry to the recognized text using deterministic rules: normalize both
+    sides (NFKC fold → lowercase → strip non-alphanumeric) and measure recall
+    (what fraction of the entry's characters appear, in order, in the OCR
+    text). Each entry is rated ``matched`` / ``partial`` / ``missing``.
+
+    No cloud model, no API key — this path is fully local and always enabled.
+    The response carries the matched OCR item ids (for UI highlighting) plus
+    the full item list. ``pass`` (``pass_``) is true iff every *required* entry
+    is matched; optional entries (``required:false``) are informational only.
+
+    v1 runs synchronously via the OCR thread pool (like /analyze's small-image
+    path); very large images work but take longer. Async/task polling is not
+    provided here — call /analyze first if you need that for huge inputs.
+    """
+    import json
+
+    from .verify import Thresholds, verify as verify_entries
+
+    # Parse the standard-copy list (tolerant of whitespace; reject non-array /
+    # empty so a malformed request is a clean 400, not an empty report).
+    try:
+        std_obj = json.loads(standard)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(
+            status_code=400, detail=f"standard is not valid JSON: {exc}"
+        ) from exc
+    if not isinstance(std_obj, list):
+        raise HTTPException(status_code=400, detail="standard must be a JSON array")
+    if not std_obj:
+        raise HTTPException(
+            status_code=400, detail="standard must contain at least one entry"
+        )
+    try:
+        # Drop nulls per-entry so omitted fields fall back to schema defaults.
+        cleaned = [
+            {k: v for k, v in e.items() if v is not None}
+            for e in std_obj
+            if isinstance(e, dict)
+        ]
+        entries = [VerifyEntry(**e) for e in cleaned]
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=400, detail=f"standard entry invalid: {exc}"
+        ) from exc
+    if not entries:
+        raise HTTPException(
+            status_code=400,
+            detail="standard must contain at least one entry with a 'text' field",
+        )
+
+    try:
+        opt_obj = _parse_options(options)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    data = await _resolve_image(file, url)
+    settings = _settings()
+    pipeline = _get_pipeline()
+    loop = asyncio.get_event_loop()
+    resp = await loop.run_in_executor(
+        _ocr_executor, lambda: pipeline.run(data, annotate=False, options=opt_obj)
+    )
+
+    th = Thresholds(
+        match=settings.verify_match_threshold,
+        partial=settings.verify_partial_threshold,
+    )
+    matched, partial, missing, results = verify_entries(resp.items, entries, th)
+    report = VerifyReport(
+        image_meta=resp.image_meta,
+        total=len(results),
+        matched=matched,
+        partial=partial,
+        missing=missing,
+        **{"pass": all(r.status == "matched" for r in results if r.required)},
+        results=results,
+        items=resp.items,
+    )
+    return JSONResponse(status_code=200, content=report.model_dump(by_alias=True))
 
 
 @app.post("/panels", response_model=PanelsResponse)

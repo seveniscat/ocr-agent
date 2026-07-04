@@ -183,7 +183,73 @@ curl -F "url=http://内网图床/dieline.png" http://10.1.93.196:8000/panels | j
 
 ---
 
-### 3.5 `GET /tasks/{task_id}` —— 查询异步任务
+### 3.5 `POST /verify` —— 文案校验(合规检测)
+
+对图片做 OCR 后,用**确定性规则**把识别出的文字与一份"标准文案"逐条比对,检测每条标准文案是否在图上出现(包装合规检测)。纯本地、无云模型、无需 API key。
+
+#### 请求参数
+
+| 参数 | 位置 | 必填 | 说明 |
+|------|------|------|------|
+| `file` / `url` | form | 二选一 | 图片输入(见 2.1) |
+| `standard` | form | 是 | 标准文案,JSON 数组,每项见下表。空数组返回 400 |
+| `options` | form | 否 | OCR 参数覆盖,JSON 字符串,同 `/analyze` |
+
+**`standard` 数组每项字段**(所有字段除 `text` 外可选):
+
+```jsonc
+[
+  {
+    "text": "净含量450g",      // 要核对的文案(必填)
+    "required": true,          // 必填(必须出现) / 选填(默认 true)
+    "category": "净含量",       // 分组,任意字符串(可选)
+    "id": "spec-12"            // 调用方 id,缺省自动补 v1/v2…(可选)
+  }
+]
+```
+
+#### 响应
+
+```jsonc
+{
+  "image_meta": { "width": 6483, "height": 5309, "tile_count": 1 },
+  "total": 3, "matched": 2, "partial": 0, "missing": 1,
+  "pass": false,                // 所有 required 条目都 matched 才为 true
+  "results": [
+    {
+      "entry_id": "v1",
+      "text": "净含量450g",
+      "required": true,
+      "category": "净含量",
+      "status": "matched",      // matched | partial | missing
+      "similarity": 1.0,        // 0~1 召回率:标准文案有多少比例字符按序出现在 OCR 文本里
+      "matched_item_ids": ["t_001", "t_002"],  // 命中的 OCR item(用于高亮,缺失时为 [])
+      "matched_text": "净含量450g"             // 命中的归一化片段(便于人工核对)
+    }
+  ],
+  "items": [ /* 完整的 OCR item 列表,同 /analyze,供前端渲染/高亮 */ ]
+}
+```
+
+#### `status` 判定规则
+
+两侧先归一化(NFKC 全角→半角 → 转小写 → 去掉空格/标点),再用 `difflib` 计算**召回率**(标准文案的字符有多少比例按顺序出现在 OCR 文本里):
+
+| 召回率 | status | 含义 |
+|--------|--------|------|
+| ≥ `OCR_VERIFY_MATCH_THRESHOLD`(默认 0.85) | `matched` | 已出现 |
+| ≥ `OCR_VERIFY_PARTIAL_THRESHOLD`(默认 0.60)且 < match | `partial` | 疑似有但存疑(OCR 错字 / 改写 / 真实差异,需人工复核) |
+| < partial | `missing` | 未出现 |
+
+```bash
+curl -F "url=http://内网图床/a.png" \
+     -F 'standard=[{"text":"净含量450g","required":true},{"text":"生产日期:见包装","required":false}]' \
+     http://10.1.93.196:8000/verify | jq
+```
+
+---
+
+### 3.6 `GET /tasks/{task_id}` —— 查询异步任务
 
 查询 `/analyze` 异步任务的状态(见 2.3)。
 
@@ -195,7 +261,7 @@ curl http://10.1.93.196:8000/tasks/{task_id}
 
 ---
 
-### 3.6 其它端点(刀模图交互工具,主要供 Web UI 用)
+### 3.7 其它端点(刀模图交互工具,主要供 Web UI 用)
 
 | 接口 | 用途 |
 |------|------|
@@ -313,5 +379,7 @@ result = ocr(image_url="http://...", options={
 | `OCR_URL_FETCH_MAX_BYTES` | 104857600 | URL 下载大小上限(100MB) |
 | `OCR_VLM_ENABLED` | false | 云 VLM 总开关（/understand、/agent、/panels/vlm） |
 | `OCR_VLM_OCR_FALLBACK_ENABLED` | false | `/analyze` 低置信 VLM 重认（需总开关 + key） |
+| `OCR_VERIFY_MATCH_THRESHOLD` | 0.85 | `/verify` 召回率 ≥ 此值判为 matched |
+| `OCR_VERIFY_PARTIAL_THRESHOLD` | 0.60 | `/verify` 召回率 ≥ 此值（且 < match）判为 partial |
 
 完整配置见 `.env.example`。

@@ -62,6 +62,12 @@ curl http://localhost:8000/tasks/<task_id>
 
 # AI-Native understanding: "what is this image?" (one whole-image VLM call)
 curl -F "file=@sample.png" http://localhost:8000/understand | jq
+
+# Copy verification: check the image text against a standard-copy list
+# (deterministic; no cloud model). matched / partial / missing per entry.
+curl -F "file=@sample.png" \
+     -F 'standard=[{"text":"净含量450g","required":true},{"text":"生产日期见包装","required":false}]' \
+     http://localhost:8000/verify | jq
 ```
 
 > 📄 **第三方接入**:完整接口说明见 [`docs/API.md`](docs/API.md)(端点、参数、响应结构、Python 示例、错误码、坐标约定)。
@@ -225,6 +231,8 @@ make understand URL=https://你的图.png             # AI 理解"这张图是�
 | `OCR_VLM_MODEL` | `qwen-vl-max` | Model name |
 | `OCR_UNDERSTAND_ENABLED` | `false` | Toggle the AI understanding layer (`/understand`) |
 | `OCR_UNDERSTAND_MAX_SIDE` | `1080` | Long edge (px) image is downscaled to before the VLM |
+| `OCR_VERIFY_MATCH_THRESHOLD` | `0.85` | `/verify` recall ≥ this → entry is `matched` |
+| `OCR_VERIFY_PARTIAL_THRESHOLD` | `0.60` | `/verify` recall ≥ this (and < match) → `partial` |
 | `OCR_LARGE_IMAGE_THRESHOLD` | `4000` | Long edge above → async (202) |
 | `OCR_URL_FETCH_TIMEOUT` | `30` | URL download connect/read timeout (seconds) |
 | `OCR_URL_FETCH_MAX_BYTES` | `104857600` | Abort URL download once body exceeds this (100MB) |
@@ -244,8 +252,9 @@ pytest -q          # tiling geometry + API smoke; no paddle/pyzbar needed
 
 ```
 app/
-  main.py          FastAPI routes (POST /analyze, /understand, /panels, /panels/vlm, /panels/candidates, /panels/compute, /agent/understand, GET /tasks/{id}, /healthz)
+  main.py          FastAPI routes (POST /analyze, /verify, /understand, /panels, /panels/vlm, /panels/candidates, /panels/compute, /agent/understand, GET /tasks/{id}, /healthz)
   pipeline.py      Orchestrator: tiles → OCR → codes → VLM → dedupe → annotate
+  verify.py        Copy verification: OCR text vs standard-copy list (deterministic recall)
   understanding.py AI-Native understanding layer: VLM "what is this" (level 1)
   tiling.py        Grid planning, coordinate remap, IoU NMS, dedupe
   panels.py        Die-line → main box-face panels (LSD long-line detection)

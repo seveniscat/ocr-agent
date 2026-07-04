@@ -323,3 +323,72 @@ class UnderstandingResult(BaseModel):
     # category_confidence is 0.0 and the typed fields are best-effort defaults.
     raw_note: Optional[str] = None
     model: str = ""                    # which VLM produced this
+
+
+# ---------------------------------------------------------------------------
+# Copy verification (``POST /verify``) — deterministic rule-based check that the
+# text on the image matches a maintained standard-copy list.
+# ---------------------------------------------------------------------------
+
+# Status of one standard entry against the OCR'd image text.
+#   matched  — the entry's text is present (recall ≥ match threshold)
+#   partial  — something close is there, but not a clean hit (review needed)
+#   missing  — the entry's text is not on the image
+VerifyEntryStatus = Literal["matched", "partial", "missing"]
+
+
+class VerifyEntry(BaseModel):
+    """One item of the caller's standard-copy list (the ground truth to check).
+
+    Passed to ``POST /verify`` as part of the ``standard`` JSON array. ``id`` is
+    optional and echoed back in the result (auto-assigned ``v1``, ``v2`` … when
+    omitted) so the caller can correlate results to its own records.
+    """
+
+    id: Optional[str] = None
+    text: str                          # the standard copy string to look for
+    required: bool = True              # True = must be matched to pass overall
+    category: Optional[str] = None     # free-form group (品名/配料/净含量…)
+
+
+class VerifyEntryResult(BaseModel):
+    """The verification outcome for one standard entry."""
+
+    entry_id: str                      # echoed/assigned id of the VerifyEntry
+    text: str                          # the standard copy string (echoed)
+    required: bool
+    category: Optional[str] = None
+    status: VerifyEntryStatus
+    similarity: float = Field(         # 0..1 recall of the entry in OCR text
+        ge=0.0, le=1.0,
+        description="Fraction of the entry's characters found, in order, in the "
+                    "OCR text (recall). matched≥match_threshold, "
+                    "partial≥partial_threshold, else missing.",
+    )
+    # OCR item ids that back the matched characters — the UI highlights these.
+    matched_item_ids: list[str] = Field(default_factory=list)
+    # The matched character run after normalization (handy for human review).
+    matched_text: Optional[str] = None
+
+
+class VerifyReport(BaseModel):
+    """Top-level response of ``POST /verify``."""
+
+    image_meta: ImageMeta
+    total: int
+    matched: int
+    partial: int
+    missing: int
+    # Overall pass: every *required* entry is matched. Optional entries never
+    # affect this (they're informational). Alias ``pass_`` for the JSON key
+    # ``pass`` (a Python keyword) — clients use "pass".
+    pass_: bool = Field(
+        default=True, description="True iff every required entry is matched.",
+        alias="pass",
+    )
+    results: list[VerifyEntryResult] = Field(default_factory=list)
+    # The underlying OCR items, so the UI can draw/highlight without a second
+    # round-trip to /analyze.
+    items: list[Item] = Field(default_factory=list)
+
+    model_config = {"populate_by_name": True}

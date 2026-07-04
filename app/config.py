@@ -241,6 +241,23 @@ class Settings(BaseSettings):
                     "(100MB default — die-line images can be large).",
     )
 
+    # ---- Copy verification (POST /verify; deterministic rules, no cloud model) ----
+    # Verification compares OCR'd text against a caller-supplied standard-copy
+    # list. The metric is recall (fraction of a standard entry's characters
+    # found, in order, in the OCR text). These two thresholds carve it into
+    # matched / partial / missing. No `verify_enabled` switch: the path is fully
+    # local (no API key, no cost), so it's always on like /analyze.
+    verify_match_threshold: float = Field(
+        0.85, ge=0.0, le=1.0,
+        description="Recall ≥ this → a standard entry is 'matched' (present). "
+                    "Lower → more lenient (tolerates OCR noise / minor rewording).",
+    )
+    verify_partial_threshold: float = Field(
+        0.60, ge=0.0, le=1.0,
+        description="Recall ≥ this (but < match) → 'partial' (something close is "
+                    "there; flag for review). Below this → 'missing'.",
+    )
+
     # ---- Annotator ----
     annotator_line_width: int = 3
 

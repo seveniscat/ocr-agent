@@ -323,6 +323,39 @@
     white-space: pre-wrap; word-break: break-all;
   }
 
+  /* ---- Copy verification (校验) ---- */
+  .verify-input { padding: 10px 14px; border-bottom: 1px solid var(--border); }
+  .verify-input .verify-hint { font-size: 10px; color: var(--muted); line-height: 1.6; margin-bottom: 6px; }
+  .verify-input .verify-hint code { background: var(--panel-2); padding: 0 4px; border-radius: 3px; font-size: 10px; color: var(--text-color); }
+  .verify-input textarea {
+    width: 100%; box-sizing: border-box; background: var(--panel-2); border: 1px solid var(--border);
+    border-radius: 6px; color: var(--text); font-size: 12px; padding: 8px; resize: vertical;
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+  }
+  .verify-input .action-row { margin-top: 8px; }
+
+  .verify-summary { display: flex; align-items: center; gap: 10px; padding: 10px 14px; font-size: 12px; border-bottom: 1px solid var(--border); }
+  .verify-summary .vsum { color: var(--muted); }
+  .verify-summary .vsum b { color: var(--text); }
+  .verify-summary .vbadge { margin-left: auto; padding: 3px 10px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+  .verify-summary .vbadge.pass { background: var(--accent-2); color: var(--bg); }
+  .verify-summary .vbadge.fail { background: var(--err); color: var(--bg); }
+
+  .verify-card { padding: 10px 14px; border-bottom: 1px solid var(--border); cursor: pointer; }
+  .verify-card:hover { background: var(--panel-2); }
+  .verify-card.active { background: var(--panel-2); }
+  .verify-card .vc-row1 { display: flex; align-items: center; gap: 8px; }
+  .verify-card .vc-icon { font-size: 14px; line-height: 1; }
+  .verify-card .vc-status { font-size: 10px; font-weight: 600; padding: 1px 7px; border-radius: 999px; }
+  .verify-card .vc-status.matched { background: var(--accent-2); color: var(--bg); }
+  .verify-card .vc-status.partial { background: var(--warn); color: var(--bg); }
+  .verify-card .vc-status.missing { background: var(--err); color: var(--bg); }
+  .verify-card .vc-opt { font-size: 9px; color: var(--muted); border: 1px solid var(--border); border-radius: 3px; padding: 0 4px; }
+  .verify-card .vc-sim { margin-left: auto; font-size: 11px; color: var(--muted); font-family: "SF Mono", Menlo, monospace; }
+  .verify-card .vc-text { font-size: 12px; margin-top: 4px; word-break: break-all; }
+  .verify-card .vc-cat { font-size: 10px; color: var(--muted); margin-top: 3px; }
+  .verify-card .vc-matched { font-size: 10px; color: var(--text-color); margin-top: 3px; font-family: "SF Mono", Menlo, monospace; word-break: break-all; }
+
   .legend { display: flex; gap: 12px; padding: 6px 14px; font-size: 11px; color: var(--muted); border-bottom: 1px solid var(--border); flex-wrap: wrap; }
   .legend span { display: flex; align-items: center; gap: 4px; }
   .legend i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
@@ -370,6 +403,7 @@
         <button class="btn primary" id="recognizeBtn" disabled>▶ 识别</button>
         <button class="btn" id="splitPanelsBtn" disabled>⊞ 拆面</button>
         <button class="btn" id="understandBtn" disabled>✦ AI 理解</button>
+        <button class="btn" id="verifyBtn" disabled>✓ 文案校验</button>
         <button class="btn ghost" id="clearBtn" disabled>清除</button>
       </div>
       <div class="status" id="status"></div>
@@ -485,6 +519,7 @@
     <div class="tabs">
       <div class="tab active" data-tab="items">识别结果 <span id="count"></span></div>
       <div class="tab" data-tab="understand">理解</div>
+      <div class="tab" data-tab="verify">校验</div>
       <div class="tab" data-tab="json">JSON</div>
     </div>
 
@@ -494,6 +529,19 @@
       </div>
       <div class="pane" id="pane-understand">
         <div style="color:var(--muted);font-size:12px;padding:14px" id="understandPlaceholder">上传图片后点击「✦ AI 理解」，让 VLM 看懂这张图</div>
+      </div>
+      <div class="pane" id="pane-verify">
+        <div class="verify-input">
+          <div class="verify-hint">
+            维护标准文案（要核对的文字）。每行一条；行内可加 <code>=选填</code> 标记该条为可选，或 <code>#分组</code> 归类。例：<code>净含量450g #净含量</code>。
+            也可直接粘贴 JSON 数组：<code>[{"text":"…","required":false,"category":"…"}]</code>。
+          </div>
+          <textarea id="verifyStandard" rows="6" placeholder="品名：鲜奶茶&#10;净含量：450g #净含量&#10;生产日期：见包装=选填"></textarea>
+          <div class="action-row">
+            <button class="btn primary" id="runVerifyBtn" disabled>✓ 开始校验</button>
+          </div>
+        </div>
+        <div id="verifyResults"></div>
       </div>
       <div class="pane" id="pane-json"><pre class="json" id="jsonOut"></pre></div>
     </div>
@@ -587,7 +635,7 @@ const $ = id => document.getElementById(id);
 // =========================================================================
 // pan-zoom viewer (unchanged logic)
 // =========================================================================
-const view = { iw:0, ih:0, scale:1, tx:0, ty:0, fitScale:1, minScale:0.05, maxScale:40, items:[], activeIdx:-1, selectedIdx:-1, panels:[], activePanel:-1, understanding:null, activeUndIdx:-1, candidates:[], splitMode:false, subject:null };
+const view = { iw:0, ih:0, scale:1, tx:0, ty:0, fitScale:1, minScale:0.05, maxScale:40, items:[], activeIdx:-1, selectedIdx:-1, panels:[], activePanel:-1, understanding:null, activeUndIdx:-1, candidates:[], splitMode:false, subject:null, verify:null, verifySel:null, verifyHighlight:null };
 const viewer = $('viewer'), canvas = $('canvas'), img = $('img'), svg = $('svg');
 
 // Item bbox clicks: delegate on the svg root (survives drawPolygons innerHTML rebuild).
@@ -1364,6 +1412,168 @@ function _escapeHtml(s) {
     .replace(/"/g, '&quot;');
 }
 
+// =========================================================================
+// Copy verification flow (POST /verify)
+// =========================================================================
+// view.verify holds the last VerifyReport; view.verifySel holds the selected
+// result's matched_item_ids (drives the overlay highlight).
+view.verify = null;
+view.verifySel = null;
+
+// The top "✓ 文案校验" button just focuses the 校验 tab (the textarea + run
+// button live there). Mirrors how /understand's UI is tab-scoped.
+$('verifyBtn').addEventListener('click', () => {
+  document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+  document.querySelector('.tab[data-tab=verify]').classList.add('active');
+  document.querySelectorAll('.pane').forEach(p => p.classList.remove('active'));
+  $('pane-verify').classList.add('active');
+  $('verifyStandard').focus();
+});
+$('runVerifyBtn').addEventListener('click', runVerify);
+
+// Enable the run button only when there's an image AND non-empty standard text.
+function syncVerifyRunBtn() {
+  $('runVerifyBtn').disabled = !(currentFile && $('verifyStandard').value.trim());
+}
+$('verifyStandard').addEventListener('input', syncVerifyRunBtn);
+
+// Turn the textarea into the JSON array the API expects.
+// Per-line syntax: 'text #category' and/or a trailing '=选填' to mark optional.
+// If the whole textarea parses as a JSON array, use it verbatim instead.
+function buildStandard() {
+  const raw = $('verifyStandard').value.trim();
+  // Allow pasting a JSON array directly.
+  if (raw.startsWith('[')) {
+    try {
+      const arr = JSON.parse(raw);
+      if (Array.isArray(arr)) return arr;
+    } catch { /* fall through to per-line parsing */ }
+  }
+  const out = [];
+  for (const line of raw.split(/\r?\n/)) {
+    const t = line.trim();
+    if (!t) continue;
+    let required = true, category = null, text = t;
+    const opt = text.match(/=选填\s*$/);
+    if (opt) { required = false; text = text.slice(0, opt.index).trim(); }
+    const cat = text.match(/#([^#]+)$/);
+    if (cat) { category = cat[1].trim(); text = text.slice(0, cat.index).trim(); }
+    if (text) out.push({ text, required, ...(category ? { category } : {}) });
+  }
+  return out;
+}
+
+async function runVerify() {
+  if (!currentFile) return;
+  const entries = buildStandard();
+  if (!entries.length) {
+    setStatus('请先填写至少一条标准文案', 'error');
+    return;
+  }
+  $('runVerifyBtn').disabled = true;
+  setStatus('OCR + 文案校验中…', 'busy');
+  try {
+    const fd = new FormData();
+    fd.append('file', currentFile);
+    fd.append('standard', JSON.stringify(entries));
+    const opt = buildOptions();
+    if (opt && Object.keys(opt).length) fd.append('options', JSON.stringify(opt));
+    const r = await fetch('/verify', { method: 'POST', body: fd });
+    if (!r.ok) throw new Error(`HTTP ${r.status}: ${(await r.text()).slice(0, 200)}`);
+    const data = await r.json();
+    // Adopt the OCR items as the current item layer so the overlay can draw
+    // matched boxes (same shape as /analyze items). This also refreshes JSON.
+    view.items = data.items || [];
+    view.selectedIdx = -1; view.activeIdx = -1;
+    view.verify = data;
+    view.verifySel = null;
+    renderVerify(data);
+    $('meta').textContent = `${data.image_meta.width}×${data.image_meta.height} · ${data.image_meta.tile_count} tile`;
+    const pass = data.pass ? '通过' : '不通过';
+    setStatus(`文案校验完成：${pass}（匹配 ${data.matched} · 疑似 ${data.partial} · 缺失 ${data.missing}）`, data.pass ? 'ok' : 'error');
+  } catch (err) {
+    setStatus('文案校验失败: ' + err.message, 'error'); console.error(err);
+  } finally {
+    syncVerifyRunBtn();
+  }
+}
+
+const VERIFY_STATUS_LABEL = { matched: '匹配', partial: '疑似', missing: '缺失' };
+const VERIFY_STATUS_ICON = { matched: '✓', partial: '⚠', missing: '✗' };
+
+function renderVerify(data) {
+  const box = $('verifyResults');
+  box.innerHTML = '';
+  const pass = data.pass;
+  const summary = document.createElement('div');
+  summary.className = 'verify-summary';
+  summary.innerHTML = `
+    <span class="vsum">共 <b>${data.total}</b> 条 · 匹配 <b>${data.matched}</b> · 疑似 <b>${data.partial}</b> · 缺失 <b>${data.missing}</b></span>
+    <span class="vbadge ${pass ? 'pass' : 'fail'}">${pass ? '整体通过' : '整体不通过'}</span>`;
+  box.appendChild(summary);
+
+  if (!data.results || !data.results.length) {
+    const empty = document.createElement('div');
+    empty.style.cssText = 'color:var(--muted);font-size:12px;padding:14px';
+    empty.textContent = '没有校验条目';
+    box.appendChild(empty);
+    $('jsonOut').textContent = JSON.stringify(data, null, 2);
+    drawPolygons();
+    return;
+  }
+
+  data.results.forEach((res, idx) => {
+    const card = document.createElement('div');
+    card.className = 'verify-card';
+    card.dataset.idx = idx;
+    const icon = VERIFY_STATUS_ICON[res.status] || '?';
+    const lbl = VERIFY_STATUS_LABEL[res.status] || res.status;
+    const opt = res.required ? '' : '<span class="vc-opt">选填</span>';
+    const cat = res.category ? `<div class="vc-cat">${_escapeHtml(res.category)}</div>` : '';
+    const matched = (res.status !== 'missing' && res.matched_text)
+      ? `<div class="vc-matched">命中: ${_escapeHtml(res.matched_text)}</div>` : '';
+    card.innerHTML = `
+      <div class="vc-row1">
+        <span class="vc-icon">${icon}</span>
+        <span class="vc-status ${res.status}">${lbl}</span>${opt}
+        <span class="vc-sim">${(res.similarity * 100).toFixed(0)}%</span>
+      </div>
+      <div class="vc-text">${_escapeHtml(res.text)}</div>
+      ${cat}${matched}`;
+    card.addEventListener('mouseenter', () => { highlightVerify(res.matched_item_ids || []); });
+    card.addEventListener('mouseleave', () => { highlightVerify(view.verifySel || []); });
+    card.addEventListener('click', () => {
+      view.verifySel = res.matched_item_ids || [];
+      document.querySelectorAll('.verify-card').forEach(c => c.classList.remove('active'));
+      card.classList.add('active');
+      highlightVerify(view.verifySel);
+    });
+    box.appendChild(card);
+  });
+  $('jsonOut').textContent = JSON.stringify(data, null, 2);
+  drawPolygons();
+}
+
+// Mark the given item ids as the verify-highlight set and redraw the overlay.
+function highlightVerify(ids) {
+  view.verifyHighlight = new Set(ids);
+  drawPolygons();
+}
+
+// Verification doesn't draw its own shapes — it tints the existing item
+// polygons. We extend itemIsHighlighted so the verify-selected item ids glow
+// like a click would (same .hl stroke as item selection).
+const _origItemIsHighlighted = itemIsHighlighted;
+itemIsHighlighted = function (idx) {
+  if (view.verifyHighlight && view.verifyHighlight.size) {
+    const it = view.items[idx];
+    if (it && view.verifyHighlight.has(it.id)) return true;
+  }
+  return _origItemIsHighlighted(idx);
+};
+
+syncVerifyRunBtn();   // initial state (disabled until image + text present)
+
 function renderUnderstanding(d) {
   const pane = $('pane-understand');
   const chips = (d.style_keywords || []).map(k => `<span class="chip">${_escapeHtml(k)}</span>`).join('');
@@ -1443,6 +1653,8 @@ function handleFile(file) {
   // Show image immediately, NO recognition yet.
   view.items = []; view.panels = []; view.candidates = []; view.splitMode = false; view.subject = null;
   view.selectedIdx = -1; view.activeIdx = -1;
+  view.verify = null; view.verifySel = null; view.verifyHighlight = null;
+  $('verifyResults').innerHTML = '';
   $('splitToolbar').style.display = 'none';
   drawPolygons();
   showImage(currentObjectUrl);
@@ -1450,6 +1662,7 @@ function handleFile(file) {
   $('recognizeBtn').disabled = false;
   $('splitPanelsBtn').disabled = false;
   $('understandBtn').disabled = false;
+  $('verifyBtn').disabled = false;
   $('clearBtn').disabled = false;
   $('count').textContent = '';
   $('itemsPlaceholder').textContent = '点击「识别」开始';
@@ -1476,10 +1689,13 @@ function clearAll() {
   $('recognizeBtn').disabled = true;
   $('splitPanelsBtn').disabled = true;
   $('understandBtn').disabled = true;
+  $('verifyBtn').disabled = true;
+  $('runVerifyBtn').disabled = true;
   $('clearBtn').disabled = true;
   $('count').textContent = '';
   $('itemsPlaceholder').textContent = '上传图片后点击「识别」';
   $('understandPlaceholder').textContent = '上传图片后点击「✦ AI 理解」，让 VLM 看懂这张图';
+  $('verifyResults').innerHTML = '';
   $('jsonOut').textContent = ''; $('meta').textContent = '';
   setStatus('','');
 }
