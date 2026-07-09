@@ -199,6 +199,135 @@ def _bbox_extents(bbox: list[float]) -> tuple[float, float, float, float]:
     return x1, x2, y1, y2
 
 
+def _bbox_center(bbox: list[float]) -> tuple[float, float]:
+    x1, y1, x2, y2 = bbox
+    return (x1 + x2) / 2.0, (y1 + y2) / 2.0
+
+
+def _bbox_x_overlap_ratio(a: list[float], b: list[float]) -> float:
+    """Overlap of two x-ranges over the smaller width, in [0, 1].
+
+    Like :func:`detector._x_overlap_ratio` but on raw bboxes [x1,y1,x2,y2].
+    """
+    ax1, _, ax2, _ = a
+    bx1, _, bx2, _ = b
+    inter = max(0.0, min(ax2, bx2) - max(ax1, bx1))
+    if inter == 0.0:
+        return 0.0
+    min_w = min(ax2 - ax1, bx2 - bx1)
+    return inter / min_w if min_w > 0 else 0.0
+
+
+# ---------------------------------------------------------------------------
+# Same-line overlap merge (mixed-script detection-split fix)
+# ---------------------------------------------------------------------------
+
+
+def _merge_two_items(a: Item, b: Item) -> Item:
+    """Merge two items into one spanning the union of their boxes.
+
+    Geometry: union bbox → axis-aligned quad. Text: concatenated left-to-right
+    (by x-center), space-separated; empty/None texts are skipped. The survivor
+    keeps the higher confidence and the union polygon. ``recognized`` stays True
+    only if both halves were recognized (a merged box containing an
+    unrecognized half is marked recognized=False so callers know to re-read).
+    """
+    ab = a.bbox
+    bb = b.bbox
+    x1, y1 = min(ab[0], bb[0]), min(ab[1], bb[1])
+    x2, y2 = max(ab[2], bb[2]), max(ab[3], bb[3])
+    merged_bbox = [x1, y1, x2, y2]
+    merged_poly = [[x1, y1], [x2, y1], [x2, y2], [x1, y2]]
+
+    # Order by x-center for natural left-to-right reading order.
+    parts = [(a, _bbox_center(ab)[0]), (b, _bbox_center(bb)[0])]
+    parts.sort(key=lambda t: t[1])
+    texts = [p.text or p.content for p, _ in parts]
+    texts = [t for t in texts if t]
+    merged_text = " ".join(texts) if texts else None
+
+    return a.model_copy(
+        update={
+            "polygon": merged_poly,
+            "bbox": merged_bbox,
+            "text": merged_text,
+            "confidence": max(a.confidence, b.confidence),
+            "recognized": bool(a.recognized and b.recognized),
+            # drop per-line quads: a merged cross-script box is no longer a
+            # clean paragraph block, so `lines` would be misleading.
+            "lines": None,
+        }
+    )
+
+
+def merge_same_line_overlaps(
+    items: list[Item],
+    same_line_y_thres: float = 35.0,
+    x_overlap_ratio: float = 0.3,
+) -> list[Item]:
+    """Merge overlapping boxes on the same text line into single boxes.
+
+    Motivation: when one line mixes scripts (e.g. English + Korean) the DB
+    detector often splits it into two boxes; after unclipping, those two boxes
+    overlap in x. The cross-tile dedupe won't merge them (different text → low
+    similarity), so both survive and overlap. This stage merges such pairs into
+    one box so every pixel belongs to at most one box.
+
+    Two boxes merge when they are on the same line (top/bottom y-edges within
+    ``same_line_y_thres``) AND their x-ranges overlap by ≥ ``x_overlap_ratio``.
+    Codes (qr/barcode) and items of different types are left alone.
+
+    Greedy single pass within each row: sorts by x, then folds adjacent
+    overlapping boxes left-to-right, so a 3-way overlap collapses to one box.
+    """
+    if len(items) <= 1:
+        return list(items)
+
+    # Only text boxes participate; codes pass through untouched.
+    candidates = [it for it in items if it.type == "text"]
+    passthrough = [it for it in items if it.type != "text"]
+    if len(candidates) <= 1:
+        return list(items)
+
+    # Group into "lines" by y proximity (single-link on top edge).
+    order = sorted(
+        range(len(candidates)),
+        key=lambda i: (candidates[i].bbox[1], candidates[i].bbox[0]),
+    )
+    lines: list[list[int]] = []
+    for idx in order:
+        it = candidates[idx]
+        placed = False
+        for line in lines:
+            # Compare against the first member's top edge of the line.
+            ref_top = candidates[line[0]].bbox[1]
+            ref_bot = candidates[line[0]].bbox[3]
+            if (
+                abs(it.bbox[1] - ref_top) <= same_line_y_thres
+                and abs(it.bbox[3] - ref_bot) <= same_line_y_thres
+            ):
+                line.append(idx)
+                placed = True
+                break
+        if not placed:
+            lines.append([idx])
+
+    out: list[Item] = list(passthrough)
+    for line_idx in lines:
+        # Sort the line's boxes left-to-right by x-center.
+        line_idx_sorted = sorted(line_idx, key=lambda i: _bbox_center(candidates[i].bbox)[0])
+        current = candidates[line_idx_sorted[0]]
+        for j in line_idx_sorted[1:]:
+            nxt = candidates[j]
+            if _bbox_x_overlap_ratio(current.bbox, nxt.bbox) >= x_overlap_ratio:
+                current = _merge_two_items(current, nxt)
+            else:
+                out.append(current)
+                current = nxt
+        out.append(current)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Cross-tile deduplication (PaddleOCR merge_fragmented + containment)
 # ---------------------------------------------------------------------------

@@ -17,6 +17,7 @@ env/
 .ruff_cache/
 .coverage
 htmlcov/
+.zcode/
 
 # Local secrets / env
 .env

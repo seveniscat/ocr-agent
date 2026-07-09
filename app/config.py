@@ -78,6 +78,21 @@ class Settings(BaseSettings):
         description="max=scale down only (keep detail on small images); "
                     "min=scale up only (speed up large images).",
     )
+    # Keep detector boxes the recognizer dropped. The PP-OCRv6 rec model's dict
+    # has no Hangul (and other non-{ch/en/japan/latin} scripts), so Korean text
+    # gets a near-zero rec score and is filtered out by the pipeline — its box
+    # vanishes too, since we only read `rec_polys`. With this on, we read the
+    # detector's full `dt_polys` set as well and emit the unmatched boxes as
+    # `recognized=False` items (with an optional base64 crop) so a downstream
+    # script-aware model can re-read them. This is how Korean regions stop being
+    # silently lost.
+    ocr_emit_crops: bool = Field(
+        True,
+        description="For boxes the recognizer dropped (low confidence — mainly "
+                    "scripts the rec model can't read, e.g. Korean under PP-OCRv6), "
+                    "keep the detector polygon AND emit a base64 PNG crop. Off → "
+                    "the boxes are still kept (recognized=False) but with no crop_b64.",
+    )
     rec_confidence_fallback: float = Field(
         0.6, ge=0.0, le=1.0,
         description="[vlm_ocr_fallback] Recognition confidence below which a crop "
@@ -112,6 +127,19 @@ class Settings(BaseSettings):
         0.3, ge=0.0, le=1.0,
         description="[paragraph mode] Min horizontal overlap ratio (IoU of "
                     "x-ranges) for two vertically-adjacent lines to merge.",
+    )
+    # Same-line overlap merge: when a single text line mixes scripts the detector
+    # often splits it into two boxes (e.g. a Latin half + a Hangul half) whose
+    # unclipped edges then overlap. The cross-tile dedupe won't merge them
+    # (different text → low similarity), so the two boxes both survive and
+    # overlap. This stage merges any two boxes on the same line whose x-ranges
+    # overlap by ≥ this ratio into one box (text concatenated left-to-right).
+    same_line_merge_x_overlap: float = Field(
+        0.3, ge=0.0, le=1.0,
+        description="Two boxes on the same line whose x-ranges overlap by ≥ this "
+                    "ratio are merged into one (eliminates detector-split overlaps "
+                    "on mixed-script lines like English+Korean). 0 = always merge "
+                    "same-line neighbors; >0.5 effectively disables.",
     )
 
     # ---- VLM (opt-in cloud vision; OCR path is PaddleOCR-only by default) ----

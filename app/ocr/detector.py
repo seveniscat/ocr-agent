@@ -42,6 +42,12 @@ class TextDetection:
     ``polygon`` is the *quad* actually drawn; when granularity is ``paragraph``
     this is the merged block quad, and ``lines`` carries the per-line quads
     that were merged into it.
+
+    ``recognized`` is False for boxes the detector found but the recognizer
+    dropped (rec score below threshold — almost always a script the loaded rec
+    model can't read, e.g. Korean under PP-OCRv6). For these ``text`` is empty
+    and ``confidence`` is 0; ``crop_b64`` carries a base64 PNG of the region so
+    a downstream script-aware model can re-read it.
     """
 
     polygon: list[list[float]]  # quad [[x,y],...]
@@ -50,6 +56,10 @@ class TextDetection:
     granularity: Granularity = "line"
     # populated only in paragraph mode: the per-line quads merged here
     lines: list[list[list[float]]] | None = None
+    # True = recognition succeeded; False = detector-only (awaiting external rec)
+    recognized: bool = True
+    # base64 PNG crop, populated for unrecognized boxes when emit_crops is on
+    crop_b64: str | None = None
 
 
 def _to_numpy(tile) -> np.ndarray:
@@ -57,6 +67,27 @@ def _to_numpy(tile) -> np.ndarray:
     if isinstance(tile, np.ndarray):
         return tile
     return np.array(tile.convert("RGB"))
+
+
+def _encode_crop(tile: np.ndarray, polygon: list[list[float]]) -> str | None:
+    """Crop the bbox around ``polygon`` from ``tile`` and return a base64 PNG.
+
+    Returns None for empty/degenerate crops (never raises). Reuses the
+    axis-aligned crop from :func:`recognizer.crop_polygon`.
+    """
+    from .recognizer import crop_polygon
+
+    crop = crop_polygon(tile, polygon)
+    if crop.size == 0 or crop.shape[0] < 2 or crop.shape[1] < 2:
+        return None
+    import base64
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.fromarray(crop).save(buf, format="PNG")
+    return base64.b64encode(buf.getvalue()).decode("ascii")
 
 
 # ---------------------------------------------------------------------------
@@ -237,6 +268,7 @@ class OCREngine:
         granularity: Granularity | None = None,
         paragraph_gap_ratio: float | None = None,
         paragraph_x_overlap: float | None = None,
+        emit_crops: bool | None = None,
     ) -> list[TextDetection]:
         """Run full OCR on a tile (HxWx3 numpy uint8 or PIL). Tile-local dets.
 
@@ -247,6 +279,12 @@ class OCREngine:
           use_textline_orientation.
         - ``det_thresh``: shortcut for the most common knob (merged into kwargs).
         - ``granularity`` / paragraph params: control output box level.
+        - ``emit_crops``: when True, detector boxes the recognizer dropped are
+          kept with ``recognized=False`` and a base64 PNG crop. Defaults to
+          ``settings.ocr_emit_crops``. This is the mechanism that stops Korean
+          (and other scripts missing from the rec dict) from being silently
+          lost: the detector boxes them, the recognizer can't read them, but
+          we no longer discard the box.
         """
         self._ensure_loaded()
         arr = _to_numpy(tile)
@@ -264,12 +302,10 @@ class OCREngine:
         texts = r0.get("rec_texts") or []
         scores = r0.get("rec_scores") or []
         n = min(len(polys), len(texts), len(scores))
-        if n == 0:
-            return []
 
         gran = granularity or self.settings.ocr_granularity
 
-        # ---- word mode: PaddleOCR already returns word boxes when asked ----
+        # ---- recognized detections (passed the rec score threshold) ----
         out_label = "word" if gran == "word" else "line"
         line_dets: list[TextDetection] = []
         for i in range(n):
@@ -286,6 +322,17 @@ class OCREngine:
                 )
             )
 
+        # ---- detector-only detections: boxes the recognizer dropped ----
+        # The recognizer filters out low-score boxes (e.g. Korean text under
+        # PP-OCRv6, whose dict has no Hangul). Those boxes are still in the
+        # detector's `dt_polys`. Recover them as recognized=False so they're not
+        # lost, optionally with a crop for an external model to re-read.
+        do_crops = (emit_crops if emit_crops is not None
+                    else self.settings.ocr_emit_crops)
+        if gran != "paragraph":
+            extra = self._recover_unrecognized(r0, arr, line_dets, emit=do_crops)
+            line_dets.extend(extra)
+
         if gran == "paragraph":
             return merge_lines_to_paragraphs(
                 line_dets,
@@ -297,3 +344,52 @@ class OCREngine:
                 else self.settings.ocr_paragraph_x_overlap,
             )
         return line_dets
+
+    def _recover_unrecognized(
+        self,
+        result: Any,
+        tile_arr: np.ndarray,
+        recognized: list[TextDetection],
+        *,
+        emit: bool,
+    ) -> list[TextDetection]:
+        """Boxes present in ``dt_polys`` but not in ``rec_polys``.
+
+        Matches detector boxes against the already-recognized ones by bbox IoU
+        (a dt box that overlaps a rec box ≥ 0.5 IoU was already recognized).
+        The unmatched dt boxes are returned as ``recognized=False`` detections,
+        each carrying a base64 PNG crop when ``emit`` is True.
+        """
+        dt_polys = result.get("dt_polys") or []
+        if not dt_polys:
+            return []
+
+        rec_bboxes = [_quad_bbox(d.polygon) for d in recognized]
+        rec_bbox_list = [[b[0], b[1], b[2], b[3]] for b in rec_bboxes]
+
+        from ..tiling import bbox_iou  # local import avoids cycle at module load
+
+        out: list[TextDetection] = []
+        for poly in dt_polys:
+            if poly is None or len(poly) < 4:
+                continue
+            poly_list = [[float(p[0]), float(p[1])] for p in poly[:4]]
+            x1, y1, x2, y2 = _quad_bbox(poly_list)
+            dt_bbox = [x1, y1, x2, y2]
+            # Skip dt boxes already covered by a recognized box.
+            if any(bbox_iou(dt_bbox, rb) >= 0.5 for rb in rec_bbox_list):
+                continue
+            crop_b64 = None
+            if emit:
+                crop_b64 = _encode_crop(tile_arr, poly_list)
+            out.append(
+                TextDetection(
+                    polygon=poly_list,
+                    text="",
+                    confidence=0.0,
+                    granularity="line",
+                    recognized=False,
+                    crop_b64=crop_b64,
+                )
+            )
+        return out

@@ -26,11 +26,17 @@ def apply_paragraph_granularity(
     tile seams never combined and the UI looked identical to ``line`` mode.
     We always collect line boxes first, then merge once in image space.
     """
+    # Recognized text lines get merged into paragraph blocks. Unrecognized
+    # boxes (recognized=False — scripts the rec model can't read, e.g. Korean)
+    # pass through untouched so their crop_b64 + polygon stay intact for an
+    # external model; merging them would pull empty text into a block.
     texts = [
-        it for it in items if it.type == "text" and it.source == "paddleocr"
+        it for it in items
+        if it.type == "text" and it.source == "paddleocr" and it.recognized
     ]
     others = [
-        it for it in items if not (it.type == "text" and it.source == "paddleocr")
+        it for it in items
+        if not (it.type == "text" and it.source == "paddleocr" and it.recognized)
     ]
     if not texts:
         return items

@@ -1572,7 +1572,9 @@ itemIsHighlighted = function (idx) {
   return _origItemIsHighlighted(idx);
 };
 
-syncVerifyRunBtn();   // initial state (disabled until image + text present)
+// NOTE: syncVerifyRunBtn() is called after `currentFile` is declared below —
+// calling it here (before that `let`) throws a TDZ ReferenceError that aborts
+// the whole <script>, breaking the WebUI.
 
 function renderUnderstanding(d) {
   const pane = $('pane-understand');
@@ -1634,6 +1636,10 @@ dz.addEventListener('click', () => fileInput.click());
 ['dragleave','drop'].forEach(e=>dz.addEventListener(e,ev=>{ev.preventDefault();dz.classList.remove('over');}));
 dz.addEventListener('drop', ev=>{ if(ev.dataTransfer.files[0]) handleFile(ev.dataTransfer.files[0]); });
 fileInput.addEventListener('change', ()=>{ if(fileInput.files[0]) handleFile(fileInput.files[0]); });
+
+// Initial UI state (now that currentFile is declared). Sets the verify button
+// disabled until both an image and standard-copy text are present.
+syncVerifyRunBtn();
 
 function updateFilenameDisplay(w, h) {
   if (!currentFile) return;

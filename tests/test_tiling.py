@@ -12,6 +12,7 @@ from app.tiling import (
     bbox_iou,
     crop_tile,
     dedupe_items,
+    merge_same_line_overlaps,
     offset_polygon,
     plan_grid,
     polygon_to_bbox,
@@ -210,3 +211,81 @@ def test_dedupe_official_seam_merge_same_text():
     ]
     out = dedupe_items(items, merge_x_thres=50, merge_y_thres=35)
     assert len(out) == 1
+
+
+# ---------------------------------------------------------------------------
+# Same-line overlap merge (mixed-script detection-split fix)
+# ---------------------------------------------------------------------------
+
+
+def test_merge_same_line_overlaps_merges_different_script_boxes():
+    """English half + Korean half on the same line, x-overlapping → one box."""
+    # Box a [100,300] w=200, box b [220,420] w=200. Overlap=300-220=80 → 80/200=0.4.
+    items = [
+        _item("en", "CAUTION", [100, 100, 300, 140], conf=0.95),
+        _item("ko", "주의하세요", [220, 100, 420, 140], conf=0.10),
+    ]
+    out = merge_same_line_overlaps(items, same_line_y_thres=35, x_overlap_ratio=0.3)
+    assert len(out) == 1
+    m = out[0]
+    # Merged bbox is the union of both.
+    assert m.bbox == [100, 100, 420, 140]
+    # Text concatenated left-to-right, English first (smaller x-center).
+    assert m.text == "CAUTION 주의하세요"
+    # Higher confidence survives.
+    assert m.confidence == 0.95
+
+
+def test_merge_same_line_overlaps_keeps_disjoint():
+    """Same line but x-disjoint boxes (no overlap) → both kept."""
+    items = [
+        _item("a", "hello", [100, 100, 200, 140]),
+        _item("b", "world", [400, 100, 500, 140]),
+    ]
+    out = merge_same_line_overlaps(items, same_line_y_thres=35, x_overlap_ratio=0.3)
+    assert len(out) == 2
+
+
+def test_merge_same_line_overlaps_different_lines():
+    """Boxes on different lines (large y gap) → not merged."""
+    items = [
+        _item("a", "line1", [100, 100, 300, 140]),
+        _item("b", "line2", [100, 500, 300, 540]),
+    ]
+    out = merge_same_line_overlaps(items, same_line_y_thres=35, x_overlap_ratio=0.3)
+    assert len(out) == 2
+
+
+def test_merge_same_line_overlaps_respects_threshold():
+    """Overlap just under the threshold → not merged."""
+    # Box a: [100,300] width 200; box b: [260,420] width 160.
+    # Overlap = 300-260 = 40; min width = 160 → ratio 0.25 < 0.3 → keep both.
+    items = [
+        _item("a", "abc", [100, 100, 300, 140]),
+        _item("b", "def", [260, 100, 420, 140]),
+    ]
+    out = merge_same_line_overlaps(items, same_line_y_thres=35, x_overlap_ratio=0.3)
+    assert len(out) == 2
+
+
+def test_merge_same_line_overlaps_unrecognized_merged_marks_recognized_false():
+    """A recognized half merged with an unrecognized half → recognized=False."""
+    a = _item("en", "CAUTION", [100, 100, 300, 140], conf=0.95)
+    b = _item("ko", "", [220, 100, 420, 140], conf=0.0).model_copy(
+        update={"recognized": False, "crop_b64": "Zm9v"}
+    )
+    out = merge_same_line_overlaps([a, b], same_line_y_thres=35, x_overlap_ratio=0.3)
+    assert len(out) == 1
+    assert out[0].recognized is False
+    # Only the recognized text survives (empty dropped).
+    assert out[0].text == "CAUTION"
+
+
+def test_merge_same_line_overlaps_codes_pass_through():
+    """qr/barcode items are never merged by this stage."""
+    items = [
+        _item("a", None, [100, 100, 200, 200], type_="qr"),
+        _item("b", None, [150, 100, 250, 200], type_="qr"),
+    ]
+    out = merge_same_line_overlaps(items, same_line_y_thres=35, x_overlap_ratio=0.3)
+    assert len(out) == 2

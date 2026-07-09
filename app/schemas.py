@@ -110,6 +110,16 @@ class Item(BaseModel):
     # for paragraph granularity: the per-line quads that were merged into this
     # block (kept so the UI / downstream can still draw individual lines)
     lines: Optional[list[list[list[float]]]] = None
+    # True = recognition succeeded (text/confidence are meaningful). False = the
+    # detector boxed this region but the recognizer dropped it (low confidence —
+    # typically a script the loaded rec model can't read, e.g. Korean under
+    # PP-OCRv6 whose dict has no Hangul). The polygon/bbox are still valid; the
+    # caller should re-read these crops with a script-appropriate model.
+    recognized: bool = True
+    # base64-encoded PNG crop of the region, populated only for unrecognized
+    # boxes when emit_crops is enabled (so callers can pipe it straight to an
+    # external recognizer without re-cropping the source image).
+    crop_b64: Optional[str] = None
 
 
 class ImageMeta(BaseModel):

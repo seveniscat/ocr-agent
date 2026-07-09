@@ -185,7 +185,7 @@ class Pipeline:
                     Item(
                         id="tmp",
                         type="text",
-                        text=det.text,
+                        text=det.text or None,
                         polygon=global_poly,
                         bbox=polygon_to_bbox(global_poly),
                         confidence=det.confidence,
@@ -193,6 +193,8 @@ class Pipeline:
                         tile_index=spec.index,
                         granularity=det.granularity,
                         lines=global_lines,
+                        recognized=det.recognized,
+                        crop_b64=det.crop_b64,
                     )
                 )
 
@@ -222,6 +224,19 @@ class Pipeline:
                     )
         t_ocr = time.perf_counter() - t_ocr
         n_after_ocr = len(all_items)
+
+        # --- merge same-line overlaps (mixed-script detection splits) BEFORE
+        # dedupe. The detector often splits one line into two boxes when it
+        # mixes scripts (e.g. English + Korean); after unclipping those overlap
+        # in x. dedupe won't fold them (different text → low similarity), so we
+        # merge them here so each pixel ends up in at most one box. ---
+        from .tiling import merge_same_line_overlaps
+
+        all_items = merge_same_line_overlaps(
+            all_items,
+            same_line_y_thres=self.settings.tile_merge_y_thres,
+            x_overlap_ratio=self.settings.same_line_merge_x_overlap,
+        )
 
         # --- dedupe at line level before paragraph merge (tile-seam duplicates
         # break geometric grouping if left in place). ---
