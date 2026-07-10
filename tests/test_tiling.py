@@ -213,6 +213,23 @@ def test_dedupe_official_seam_merge_same_text():
     assert len(out) == 1
 
 
+def test_dedupe_keeps_similar_independent_same_line_words():
+    """Two similar-length independent words on the same line must NOT merge.
+
+    Regression for a grid-of-names layout: "Tobirama Senju" and "Hashirama
+    Senju" share a suffix and sit on the same line within seam-x range, so
+    their Levenshtein similarity (0.73) cleared the text threshold and dedupe
+    wrongly dropped one as a seam fragment. A genuine fragment is much shorter
+    than its whole; two independent words are near-equal length.
+    """
+    items = [
+        _item("a", "Tobirama Senju", [5, 199, 133, 221], conf=1.0),
+        _item("b", "Hashirama Senju", [157, 198, 274, 221], conf=1.0),
+    ]
+    out = dedupe_items(items, merge_x_thres=50, merge_y_thres=35)
+    assert len(out) == 2
+
+
 # ---------------------------------------------------------------------------
 # Same-line overlap merge (mixed-script detection-split fix)
 # ---------------------------------------------------------------------------

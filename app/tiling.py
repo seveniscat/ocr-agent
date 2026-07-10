@@ -260,9 +260,37 @@ def _merge_two_items(a: Item, b: Item) -> Item:
     )
 
 
+def _is_same_line(a: list[float], b: list[float], y_gap_ratio: float = 0.6) -> bool:
+    """True when two boxes plausibly sit on the same text line.
+
+    Uses a FRACTION of the average box height as the tolerance, not an absolute
+    pixel threshold. A fixed 35px tolerance (sized for ~40px packaging copy)
+    wrongly merges adjacent rows of a dense small-font grid (≈20px row pitch),
+    collapsing a whole table into one garbled super-line. A relative tolerance
+    adapts to both: dense grids and large copy.
+
+    Two boxes are "same line" when their vertical centers are within
+    ``y_gap_ratio * avg_height`` AND neither sits clearly below the other's
+    baseline (the gap between them is small relative to their height).
+    """
+    ha = a[3] - a[1]
+    hb = b[3] - b[1]
+    avg_h = (ha + hb) / 2.0
+    if avg_h <= 0:
+        return False
+    ca = (a[1] + a[3]) / 2.0
+    cb = (b[1] + b[3]) / 2.0
+    # Centers close relative to height → same line.
+    if abs(ca - cb) > y_gap_ratio * avg_h:
+        return False
+    # And the gap between them must be small (not stacked rows).
+    gap = max(b[1], a[1]) - min(a[3], b[3])
+    return gap <= y_gap_ratio * avg_h
+
+
 def merge_same_line_overlaps(
     items: list[Item],
-    same_line_y_thres: float = 35.0,
+    same_line_y_thres: float = 35.0,  # kept for signature compat; unused now
     x_overlap_ratio: float = 0.3,
 ) -> list[Item]:
     """Merge overlapping boxes on the same text line into single boxes.
@@ -273,59 +301,54 @@ def merge_same_line_overlaps(
     similarity), so both survive and overlap. This stage merges such pairs into
     one box so every pixel belongs to at most one box.
 
-    Two boxes merge when they are on the same line (top/bottom y-edges within
-    ``same_line_y_thres``) AND their x-ranges overlap by ≥ ``x_overlap_ratio``.
-    Codes (qr/barcode) and items of different types are left alone.
+    Two boxes merge when they are on the same line (see :func:`_is_same_line`,
+    adaptive to box height) AND their x-ranges overlap by ≥
+    ``x_overlap_ratio``. Codes (qr/barcode) and items of different types are
+    left alone.
 
-    Greedy single pass within each row: sorts by x, then folds adjacent
-    overlapping boxes left-to-right, so a 3-way overlap collapses to one box.
+    Implementation: pairwise scan. Each pass merges at most ONE pair then
+    restarts, so a merge is always evaluated against the ORIGINAL geometry of
+    that pass — a merged (widened) box can never cascade into an adjacent
+    non-overlapping neighbor. A grid column thus never gets folded into a
+    merged wide box. Genuine 3-way overlaps still collapse over multiple passes.
+    Items are compared largest-first within a pass.
     """
     if len(items) <= 1:
         return list(items)
 
-    # Only text boxes participate; codes pass through untouched.
-    candidates = [it for it in items if it.type == "text"]
-    passthrough = [it for it in items if it.type != "text"]
-    if len(candidates) <= 1:
-        return list(items)
-
-    # Group into "lines" by y proximity (single-link on top edge).
-    order = sorted(
-        range(len(candidates)),
-        key=lambda i: (candidates[i].bbox[1], candidates[i].bbox[0]),
-    )
-    lines: list[list[int]] = []
-    for idx in order:
-        it = candidates[idx]
-        placed = False
-        for line in lines:
-            # Compare against the first member's top edge of the line.
-            ref_top = candidates[line[0]].bbox[1]
-            ref_bot = candidates[line[0]].bbox[3]
-            if (
-                abs(it.bbox[1] - ref_top) <= same_line_y_thres
-                and abs(it.bbox[3] - ref_bot) <= same_line_y_thres
-            ):
-                line.append(idx)
-                placed = True
+    work = list(items)
+    while True:
+        # Largest first so the bigger box of a true overlap anchors the merge.
+        order = sorted(
+            range(len(work)),
+            key=lambda i: _bbox_area(work[i].bbox),
+            reverse=True,
+        )
+        merged_pair = False
+        for pos_i, i in enumerate(order):
+            for pos_j in range(pos_i + 1, len(order)):
+                j = order[pos_j]
+                a, b = work[i], work[j]
+                if a.type != "text" or b.type != "text":
+                    continue
+                # Same line AND x-overlapping → one genuine merge, then restart.
+                if (
+                    _is_same_line(a.bbox, b.bbox)
+                    and _bbox_x_overlap_ratio(a.bbox, b.bbox)
+                    >= x_overlap_ratio
+                ):
+                    merged = _merge_two_items(a, b)
+                    # Rebuild work without i and j, append the merge.
+                    keep = [work[k] for k in range(len(work)) if k != i and k != j]
+                    keep.append(merged)
+                    work = keep
+                    merged_pair = True
+                    break
+            if merged_pair:
                 break
-        if not placed:
-            lines.append([idx])
-
-    out: list[Item] = list(passthrough)
-    for line_idx in lines:
-        # Sort the line's boxes left-to-right by x-center.
-        line_idx_sorted = sorted(line_idx, key=lambda i: _bbox_center(candidates[i].bbox)[0])
-        current = candidates[line_idx_sorted[0]]
-        for j in line_idx_sorted[1:]:
-            nxt = candidates[j]
-            if _bbox_x_overlap_ratio(current.bbox, nxt.bbox) >= x_overlap_ratio:
-                current = _merge_two_items(current, nxt)
-            else:
-                out.append(current)
-                current = nxt
-        out.append(current)
-    return out
+        if not merged_pair:
+            break
+    return work
 
 
 # ---------------------------------------------------------------------------
@@ -427,8 +450,23 @@ def _should_merge_items(
     if _boxes_mergeable_official(a.bbox, b.bbox, merge_x_thres, merge_y_thres):
         if no_text:
             return True
-        if ta and tb and _text_similarity(ta, tb) >= text_threshold:
-            return True
+        if ta and tb:
+            # Identical text on the same line is always a tile-seam duplicate.
+            if ta == tb:
+                return True
+            if _text_similarity(ta, tb) >= text_threshold:
+                # Guard against merging two SIMILAR-but-INDEPENDENT words on the
+                # same line (e.g. a grid of names: "Tobirama Senju" vs "Hashirama
+                # Senju" — same suffix, similar length, Levenshtein ≥ threshold).
+                # A genuine seam fragment is much SHORTER than its whole (a
+                # trailing word of a full sentence); two independent words are
+                # near-equal length. Require the shorter text to be a real
+                # fragment (< 60% of the longer) before treating same-line +
+                # similar as a duplicate.
+                short_len = min(len(ta), len(tb))
+                long_len = max(len(ta), len(tb))
+                if long_len == 0 or short_len / long_len < 0.6:
+                    return True
 
     # 2) Containment: smaller box inside larger on the same line + text substring.
     area_a, area_b = _bbox_area(a.bbox), _bbox_area(b.bbox)

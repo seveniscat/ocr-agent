@@ -234,7 +234,6 @@ class Pipeline:
 
         all_items = merge_same_line_overlaps(
             all_items,
-            same_line_y_thres=self.settings.tile_merge_y_thres,
             x_overlap_ratio=self.settings.same_line_merge_x_overlap,
         )
 
