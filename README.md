@@ -4,7 +4,7 @@ High-resolution OCR + polygon bbox engine for **packaging dielines** (100–1000
 Outputs structured JSON: every text line / QR / barcode → polygon bbox + content + type + confidence. Optional annotated image for visual QA.
 
 ## Design in one paragraph
-**Hybrid**: deterministic work (bbox detection, OCR, QR decode) is done by fast local expert models (PaddleOCR 3.x / PP-OCRv6 polygon detector + pyzbar); the cloud VLM (Qwen-VL) plays two roles — (1) a **fallback** for art / curved text PaddleOCR can't read confidently, and (2) the **AI-Native understanding layer** (`POST /understand`) that looks at the whole image and answers "what is this" (category / style / salient elements). Very high-resolution images are handled by **dynamic grid tiling** with overlap and cross-tile NMS deduplication — no single model ingests 10000px natively. The "AINative 审查" layer (probability sum, six-finger, compliance) is intentionally left as a pluggable interface in v1.
+**Hybrid**: deterministic work (bbox detection, OCR, QR decode) is done by fast local expert models (PaddleOCR 3.7.0 / PP-OCRv6 polygon detector + pyzbar); the cloud VLM (Qwen-VL) plays two roles — (1) a **fallback** for art / curved text PaddleOCR can't read confidently, and (2) the **AI-Native understanding layer** (`POST /understand`) that looks at the whole image and answers "what is this" (category / style / salient elements). Very high-resolution images are handled by **dynamic grid tiling** with overlap and cross-tile NMS deduplication — no single model ingests 10000px natively. The "AINative 审查" layer (probability sum, six-finger, compliance) is intentionally left as a pluggable interface in v1.
 
 ## Architecture
 
@@ -219,7 +219,7 @@ make understand URL=https://你的图.png             # AI 理解"这张图是�
 | `OCR_TILE_TARGET_SIZE` | `4000` | Tile size when long edge > `SMALL_IMAGE_THRESHOLD` |
 | `OCR_SMALL_IMAGE_THRESHOLD` | `4000` | Long edge ≤ this → single `predict()` (no tiling) |
 | `OCR_OCR_DET_LIMIT_SIDE_LEN` | `1216` | Detection resize long edge (PaddleOCR 3.x hi-res default) |
-| `OCR_OCR_VERSION` | `PP-OCRv6` | OCR pipeline; v6 = `PP-OCRv6_medium_rec` (≈50-language single model) |
+| `OCR_OCR_VERSION` | `PP-OCRv6` | OCR pipeline (PaddleOCR 3.7.0); v6 = `PP-OCRv6_medium_rec` (≈50-language single model) |
 | `OCR_OCR_LANG` | `ch` | Lang tag; default `ch` + v6 = multilingual rec |
 | `OCR_OCR_THRESHOLD` | `0.3` | PaddleOCR detection threshold |
 | `OCR_REC_CONFIDENCE_FALLBACK` | `0.6` | Below this → VLM re-reads crop if fallback enabled |

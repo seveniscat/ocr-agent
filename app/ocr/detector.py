@@ -1,6 +1,6 @@
 """PaddleOCR wrapper: polygon detection + recognition per tile.
 
-Targets **PaddleOCR 3.x** with **PP-OCRv6** by default
+Targets **PaddleOCR 3.7.0** with **PP-OCRv6** by default
 (``PP-OCRv6_medium_det`` + ``PP-OCRv6_medium_rec``, single-model ≈50-language rec).
 Low-confidence crops are re-read by the VLM only when
 ``vlm_ocr_fallback_enabled`` is set (opt-in; default off).
@@ -215,7 +215,7 @@ def merge_lines_to_paragraphs(
 
 
 class OCREngine:
-    """Wraps PaddleOCR 3.x. Lazy-loaded; safe to construct without paddle."""
+    """Wraps PaddleOCR 3.7.0. Lazy-loaded; safe to construct without paddle."""
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -234,7 +234,7 @@ class OCREngine:
 
         s = self.settings
         logger.info(
-            "Loading PaddleOCR 3.x (version=%s, lang=%s)…",
+            "Loading PaddleOCR 3.7.0 (version=%s, lang=%s)…",
             s.ocr_version, s.ocr_lang,
         )
         self._ocr = PaddleOCR(
