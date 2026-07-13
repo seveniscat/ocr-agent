@@ -127,7 +127,7 @@ def run_vlm_ocr(
     if image_url:
         try:
             raw_items = _detect_from_url(
-                vlm, image_url, model=model,
+                vlm, image_url, model=model, img_w=w, img_h=h,
             )
         except Exception as exc:  # noqa: BLE001 — best-effort
             logger.warning("vlm_ocr: whole-image VLM call failed: %s", exc)
@@ -251,12 +251,13 @@ def _detect_tile(
 
     Raises whatever the VLM call raises — the caller wraps that per-tile.
     """
+    th, tw = tile.shape[:2]
     data_url = _encode_for_vlm(tile, max_side=max_side)
     raw, _conf = vlm.ask_image(
-        data_url, _OCR_PROMPT, max_tokens=4096, json_mode=True,
+        data_url, _OCR_PROMPT, max_tokens=8192, json_mode=True,
         model_override=model or None,
     )
-    return _parse_ocr_items(raw)
+    return _parse_ocr_items(raw, img_w=tw, img_h=th)
 
 
 def _detect_from_url(
@@ -264,6 +265,8 @@ def _detect_from_url(
     image_url: str,
     *,
     model: str,
+    img_w: int = 0,
+    img_h: int = 0,
 ) -> list[tuple[str, str, list[float]]]:
     """Ground all elements in a whole image via a public URL.
 
@@ -276,38 +279,56 @@ def _detect_from_url(
     """
     # ask_image accepts a full data URL OR a public http(s) URL in the
     # ``image_url`` slot (DashScope/Qwen-VL fetches it server-side). We pass the
-    # raw URL through unchanged.
+    # raw URL through unchanged. max_tokens is generous (8192) because a dense
+    # packaging image can yield 100+ items whose JSON exceeds 4K tokens.
     raw, _conf = vlm.ask_image(
-        image_url, _OCR_PROMPT, max_tokens=4096, json_mode=True,
+        image_url, _OCR_PROMPT, max_tokens=8192, json_mode=True,
         model_override=model or None,
     )
-    return _parse_ocr_items(raw)
+    return _parse_ocr_items(raw, img_w=img_w, img_h=img_h)
 
 
 def _parse_ocr_items(
     raw: str,
+    *,
+    img_w: int = 0,
+    img_h: int = 0,
 ) -> list[tuple[str, str, list[float]]]:
     """Parse VLM output into ``(type, payload, norm_bbox)`` triples.
 
-    Tolerant of: markdown fences / prose preamble, the ``<box>`` tag form
-    Qwen-VL sometimes emits, ``bbox`` as ``[x,y,w,h]`` vs ``[x1,y1,x2,y2]``,
-    swapped corners, and values slightly outside [0,1] (clamped). Unknown types
-    are dropped. Entries without a usable bbox are dropped.
+    Tolerant of: markdown fences / prose preamble, truncated JSON (recovers
+    complete items before the cut), ``bbox`` as pixel coords vs normalized
+    (auto-detects: when values exceed ~1.5 they're treated as pixels and
+    divided by ``img_w``/``img_h``), swapped corners, and values slightly
+    outside [0,1] (clamped). Unknown types / bbox-less entries are dropped.
     """
-    obj = _extract_json(raw)
-    if obj is None or not isinstance(obj.get("items"), list):
+    items = _extract_items(raw)
+    if not items:
         logger.warning("vlm_ocr: no items in VLM output: %.200s", raw)
         return []
 
+    # Detect whether bboxes are pixel coords or normalized. If ANY item has a
+    # value > 1.5, the model returned absolute pixels (qwen3.7-plus often does
+    # this despite the prompt asking for 0–1). Normalize using the image size.
+    pixel_mode = False
+    for e in items:
+        b = e.get("bbox") if isinstance(e, dict) else None
+        if isinstance(b, list) and len(b) == 4:
+            try:
+                if max(float(x) for x in b) > 1.5:
+                    pixel_mode = True
+                    break
+            except (TypeError, ValueError):
+                continue
+
     out: list[tuple[str, str, list[float]]] = []
-    items = obj["items"]
     for e in items:
         if not isinstance(e, dict):
             continue
         itype = _norm_type(e.get("type"))
         if itype is None:
             continue
-        norm = _norm_bbox(e)
+        norm = _norm_bbox(e, pixel_mode=pixel_mode, img_w=img_w, img_h=img_h)
         if norm is None:
             continue
         # payload: text for text/art_text, content for qr/barcode — but accept
@@ -319,6 +340,43 @@ def _parse_ocr_items(
             payload = str(e.get("text") or e.get("content") or "").strip()
         out.append((itype, payload, norm))
     return out
+
+
+def _extract_items(raw: str) -> list[dict]:
+    """Extract the ``items`` list from VLM JSON, tolerating truncation.
+
+    Tries, in order: (1) clean full-JSON parse, (2) regex to the last complete
+    ``}`` that still yields valid JSON, (3) per-item regex recovery — grab each
+    complete ``{ ... }`` object inside the ``items`` array even when the overall
+    JSON is cut off mid-object. This last path is what saves a dense-image
+    response whose JSON was truncated by the token limit.
+    """
+    if not raw or not raw.strip():
+        return []
+    obj = _extract_json(raw)
+    if obj is not None and isinstance(obj.get("items"), list):
+        return [e for e in obj["items"] if isinstance(e, dict)]
+
+    # Truncation recovery: pull out each complete {...} object that looks like
+    # an item (has a "type" or "bbox" key). The outer array may be unclosed,
+    # but individual objects up to the cut are still well-formed JSON.
+    import json as _json
+    import re as _re
+
+    item_objs: list[dict] = []
+    for m in _re.finditer(r"\{[^{}]*\}", raw):
+        chunk = m.group(0)
+        try:
+            e = _json.loads(chunk)
+        except _json.JSONDecodeError:
+            continue
+        if isinstance(e, dict) and ("type" in e or "bbox" in e):
+            item_objs.append(e)
+    if item_objs:
+        logger.info(
+            "vlm_ocr: recovered %d items from truncated JSON", len(item_objs)
+        )
+    return item_objs
 
 
 def _norm_type(v) -> str | None:
@@ -340,14 +398,21 @@ def _norm_type(v) -> str | None:
     return None
 
 
-def _norm_bbox(e: dict) -> list[float] | None:
+def _norm_bbox(
+    e: dict,
+    *,
+    pixel_mode: bool = False,
+    img_w: int = 0,
+    img_h: int = 0,
+) -> list[float] | None:
     """Extract a normalized ``[x1,y1,x2,y2]`` from a VLM item dict.
 
-    Accepts ``bbox`` / ``box`` / ``bbox_2d`` keys; handles 4-number lists that
-    are either ``[x1,y1,x2,y2]`` or ``[x,y,w,h]`` (heuristic: if x2/y2 < x1/y1
-    it must be w/h; if both pairs are plausible, treat as xyxy and clamp).
-    Also strips the Qwen ``<box>...</box>`` string form. Returns None when no
-    usable 4-float box can be recovered.
+    Accepts ``bbox`` / ``box`` / ``bbox_2d`` keys. When ``pixel_mode`` is True
+    the raw values are treated as absolute pixels and divided by ``img_w`` /
+    ``img_h`` (x by width, y by height) to normalize — qwen3.7-plus often
+    returns pixel coords despite the prompt asking for 0–1. Also strips the
+    Qwen ``<box>...</box>`` string form. Returns None when no usable 4-float
+    box can be recovered.
     """
     for key in ("bbox", "box", "bbox_2d"):
         v = e.get(key)
@@ -356,33 +421,49 @@ def _norm_bbox(e: dict) -> list[float] | None:
                 vals = [float(x) for x in v]
             except (TypeError, ValueError):
                 continue
-            return _canonicalize_bbox(vals)
+            return _canonicalize_bbox(
+                vals, pixel_mode=pixel_mode, img_w=img_w, img_h=img_h
+            )
         if isinstance(v, str):
             # "<box>x1,y1,x2,y2</box>" or bare "x1,y1,x2,y2"
             import re
 
-            m = re.findall(r"\d+\.?\d*", v)
+            m = re.findall(r"-?\d+\.?\d*", v)
             if len(m) == 4:
                 try:
-                    return _canonicalize_bbox([float(x) for x in m])
+                    return _canonicalize_bbox(
+                        [float(x) for x in m],
+                        pixel_mode=pixel_mode, img_w=img_w, img_h=img_h,
+                    )
                 except (TypeError, ValueError):
                     pass
     return None
 
 
-def _canonicalize_bbox(vals: list[float]) -> list[float]:
+def _canonicalize_bbox(
+    vals: list[float],
+    *,
+    pixel_mode: bool = False,
+    img_w: int = 0,
+    img_h: int = 0,
+) -> list[float]:
     """Turn a 4-number list into a clamped, sorted ``[x1,y1,x2,y2]`` in [0,1].
 
-    Qwen-VL documents its box output as ``[x1,y1,x2,y2]`` (two corners). We treat
-    the 4 values as two corners and sort each axis so a swapped-corner output
-    still yields a valid box. ``[x,y,w,h]`` is NOT specially detected: it's
-    ambiguous vs a swapped xyxy without more signal, and Qwen-VL uses xyxy, so
-    assuming xyxy + sort is the robust default. Callers that know their model
-    emits xywh should convert before calling.
+    Treats the 4 values as two corners ``[x1,y1,x2,y2]`` and sorts each axis so
+    a swapped-corner output still yields a valid box. In ``pixel_mode`` the
+    x-values are divided by ``img_w`` and y-values by ``img_h`` first (clamped
+    to a safe range to reject absurd model output).
     """
-    a, b, c, d = [_clamp01(v) for v in vals]
-    x1, x2 = sorted([a, c])
-    y1, y2 = sorted([b, d])
+    a, b, c, d = vals
+    if pixel_mode and img_w > 0 and img_h > 0:
+        # Normalize pixels → fractions. Clamp inputs to a generous bound so a
+        # stray huge value doesn't produce a nonsense fraction.
+        a = max(0.0, min(a, img_w)) / img_w
+        c = max(0.0, min(c, img_w)) / img_w
+        b = max(0.0, min(b, img_h)) / img_h
+        d = max(0.0, min(d, img_h)) / img_h
+    x1, x2 = sorted([_clamp01(a), _clamp01(c)])
+    y1, y2 = sorted([_clamp01(b), _clamp01(d)])
     return [x1, y1, x2, y2]
 
 
