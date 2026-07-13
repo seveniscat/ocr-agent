@@ -95,9 +95,11 @@ class Settings(BaseSettings):
                     "the boxes are still kept (recognized=False) but with no crop_b64.",
     )
     rec_confidence_fallback: float = Field(
-        0.6, ge=0.0, le=1.0,
+        0.95, ge=0.0, le=1.0,
         description="[vlm_ocr_fallback] Recognition confidence below which a crop "
-                    "may be re-read by the VLM (only when fallback is enabled).",
+                    "is re-read by the VLM. Default 0.95 — any text box PaddleOCR "
+                    "isn't 95% sure of gets cropped and sent to the VLM for a second "
+                    "read (only when vlm_ocr_fallback_enabled + vlm_enabled are on).",
     )
     ocr_version: OcrVersion = Field(
         "PP-OCRv6",
@@ -156,9 +158,13 @@ class Settings(BaseSettings):
                     "/panels/vlm). OCR analyze does not require this.",
     )
     vlm_ocr_fallback_enabled: bool = Field(
-        False,
-        description="Re-read low-confidence PaddleOCR crops via VLM during "
-                    "POST /analyze. Requires vlm_enabled + API key.",
+        True,
+        description="Re-read low-confidence PaddleOCR crops (< rec_confidence_fallback, "
+                    "default 0.95) via VLM during POST /analyze. On by default so the "
+                    "second-pass VLM recognition kicks in the moment the VLM is enabled "
+                    "(vlm_enabled + API key). The pipeline guards on BOTH switches, so "
+                    "with the default vlm_enabled=false this stays dormant — no key, no "
+                    "calls, no behavior change.",
     )
     vlm_provider: str = "qwen"
     vlm_api_key: str = ""
