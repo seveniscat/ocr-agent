@@ -11,12 +11,15 @@ from typing import Literal, Optional
 from pydantic import BaseModel, Field
 
 ItemType = Literal["text", "art_text", "qr", "barcode"]
-ItemSource = Literal["paddleocr", "vlm_fallback", "pyzbar"]
+ItemSource = Literal["paddleocr", "vlm", "vlm_fallback", "pyzbar"]
 Granularity = Literal["word", "line", "paragraph"]
+# Which OCR engine the pipeline should run. None/"" → server default
+# (settings.ocr_engine_default), so the UI can leave it unset.
+OcrEngine = Literal["paddleocr", "vlm"]
 
 
 class OCROptions(BaseModel):
-    """Per-request overrides for the PaddleOCR engine.
+    """Per-request overrides for the OCR engine.
 
     All fields are optional; ``None`` means "use the server default" (from
     Settings). These are the parameters PaddleOCR's ``predict()`` accepts as
@@ -25,6 +28,15 @@ class OCROptions(BaseModel):
 
     See https://paddlepaddle.github.io/PaddleOCR/ for parameter semantics.
     """
+
+    # ---- engine selection (paddleocr = local DB++ det+rec; vlm = Qwen-VL
+    # grounding OCR). None/"" → server default (ocr_engine_default). When
+    # ``vlm`` is selected the PaddleOCR tuning fields below are ignored — the
+    # VLM engine decides its own detection/recognition. ----
+    engine: Optional[OcrEngine] = Field(
+        None, description="paddleocr = 本地 DB++ det+rec (默认); "
+                          "vlm = Qwen-VL 视觉 grounding OCR (需 OCR_VLM_OCR_ENABLED)。"
+    )
 
     # ---- DB++ text detector ----
     text_det_thresh: Optional[float] = Field(

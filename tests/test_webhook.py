@@ -128,10 +128,16 @@ def _stub_pipeline_run(monkeypatch, run_impl):
 
     Builds the lazily-created pipeline singleton first, then patches its bound
     method — the endpoint resolves the pipeline via ``_get_pipeline()`` which
-    returns the same cached instance.
+    returns the same cached instance. The wrapper absorbs extra kwargs
+    (``image_url``, etc.) so stubs only declare the args they care about and
+    stay forward-compatible with new ``Pipeline.run`` parameters.
     """
     pipeline = main_mod._get_pipeline()
-    monkeypatch.setattr(pipeline, "run", run_impl)
+
+    def _run_wrapper(image_data, annotate=False, options=None, **_kwargs):
+        return run_impl(image_data, annotate=annotate, options=options)
+
+    monkeypatch.setattr(pipeline, "run", _run_wrapper)
 
 
 def _ok_response(width: int = 8, height: int = 8):

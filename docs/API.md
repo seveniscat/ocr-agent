@@ -88,15 +88,20 @@ curl http://10.1.93.196:8000/tasks/f32332e8...
 
 ```jsonc
 {
-  "text_det_thresh": 0.2,        // 检测阈值,调低→召回更多框(艺术字救场)
-  "text_det_box_thresh": 0.6,    // 框内平均分阈值,调低→保留淡色字
-  "text_det_unclip_ratio": 1.5,  // 框放大系数,调大→框更松(艺术字笔画溢出)
-  "text_rec_score_thresh": 0.5,  // 识别置信度门槛
-  "granularity": "paragraph",    // word=词框 / line=行框(默认) / paragraph=段落块
+  "engine": "vlm",               // 引擎: paddleocr(默认,本地 DB++) | vlm(Qwen-VL 视觉定位 OCR)
+                                 //   vlm 时下方检测/识别参数无效(由模型自动决定);granularity 仍生效
+  "text_det_thresh": 0.2,        // [paddleocr] 检测阈值,调低→召回更多框(艺术字救场)
+  "text_det_box_thresh": 0.6,    // [paddleocr] 框内平均分阈值,调低→保留淡色字
+  "text_det_unclip_ratio": 1.5,  // [paddleocr] 框放大系数,调大→框更松(艺术字笔画溢出)
+  "text_rec_score_thresh": 0.5,  // [paddleocr] 识别置信度门槛
+  "granularity": "paragraph",    // word=词框 / line=行框(默认) / paragraph=段落块(两引擎均支持)
   "paragraph_gap_ratio": 0.5,    // [paragraph] 行间距合并阈值
-  "use_textline_orientation": true  // 是否做文字行方向分类(旋转/倒置文字)
+  "use_textline_orientation": true  // [paddleocr] 是否做文字行方向分类(旋转/倒置文字)
 }
 ```
+
+> **引擎选择**：`engine=vlm` 走 Qwen-VL 视觉定位 OCR,会把图中**所有**文字/艺术字/二维码/条码以归一化坐标框出并映射回像素坐标(大图自动分 tile,每 tile ≤ `OCR_VLM_OCR_MAX_SIDE`,避免大图请求卡死)。码检测同时跑 pyzbar 可靠解码,与 VLM 视觉框去重合并。需 `OCR_VLM_ENABLED=true` + `OCR_VLM_OCR_ENABLED=true` + API key,否则返回 503。
+
 
 #### 响应
 
@@ -115,7 +120,7 @@ curl http://10.1.93.196:8000/tasks/f32332e8...
       "polygon": [[498,383],[659,383],[664,419],[504,444]],
       "bbox": [498, 383, 664, 444],
       "confidence": 0.97,
-      "source": "paddleocr"                     // paddleocr | vlm_fallback | pyzbar
+      "source": "paddleocr"                     // paddleocr | vlm | vlm_fallback | pyzbar
     }
   ],
   "options_used": { ... },
@@ -127,10 +132,10 @@ curl http://10.1.93.196:8000/tasks/f32332e8...
 
 | `type` | 含义 | 内容字段 | 来源 |
 |--------|------|----------|------|
-| `text` | 普通文字 | `text` | `paddleocr` / `vlm_fallback` |
-| `art_text` | 艺术字（预留；低置信 VLM 重认现标记为 `text` + `vlm_fallback`） | `text` | — |
-| `qr` | 二维码 | `content` | pyzbar |
-| `barcode` | 条码 | `content` | pyzbar |
+| `text` | 普通文字 | `text` | `paddleocr` / `vlm` / `vlm_fallback` |
+| `art_text` | 艺术字 | `text` | `vlm`（VLM 引擎可识别艺术字） |
+| `qr` | 二维码 | `content` | `pyzbar` / `vlm` |
+| `barcode` | 条码（含 69 码） | `content` | `pyzbar` / `vlm` |
 
 > 提取内容时用 `item.text ?? item.content` 兼容两种类型。
 
@@ -377,8 +382,12 @@ result = ocr(image_url="http://...", options={
 | `OCR_LARGE_IMAGE_THRESHOLD` | 4000 | 长边超过此值走异步 |
 | `OCR_URL_FETCH_TIMEOUT` | 30 | URL 下载超时(秒) |
 | `OCR_URL_FETCH_MAX_BYTES` | 104857600 | URL 下载大小上限(100MB) |
-| `OCR_VLM_ENABLED` | false | 云 VLM 总开关（/understand、/agent、/panels/vlm） |
+| `OCR_VLM_ENABLED` | false | 云 VLM 总开关（/understand、/agent、/panels/vlm、VLM OCR 引擎） |
 | `OCR_VLM_OCR_FALLBACK_ENABLED` | false | `/analyze` 低置信 VLM 重认（需总开关 + key） |
+| `OCR_VLM_OCR_ENABLED` | false | VLM OCR 引擎开关（`engine=vlm` 时需此项 + 总开关 + key） |
+| `OCR_VLM_OCR_MODEL` | (空=复用 VLM_MODEL) | VLM OCR 视觉模型（建议 grounding 强的模型） |
+| `OCR_VLM_OCR_MAX_SIDE` | 2048 | VLM OCR 每 tile 下采样长边（大图自动分 tile） |
+| `OCR_OCR_ENGINE_DEFAULT` | paddleocr | 默认 OCR 引擎：paddleocr \| vlm |
 | `OCR_VERIFY_MATCH_THRESHOLD` | 0.85 | `/verify` 召回率 ≥ 此值判为 matched |
 | `OCR_VERIFY_PARTIAL_THRESHOLD` | 0.60 | `/verify` 召回率 ≥ 此值（且 < match）判为 partial |
 

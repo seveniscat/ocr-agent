@@ -97,8 +97,31 @@
   .dropzone:hover, .dropzone.over { border-color: var(--accent); color: var(--text); background: var(--panel-2); }
   .dropzone strong { color: var(--text); display: block; margin-bottom: 4px; font-size: 13px; }
   .dropzone .filename { color: var(--accent-2); font-size: 11px; margin-top: 6px; word-break: break-all; }
+  /* URL input row: sits under the dropzone so a pasted image link is a first-class
+     input (the server already accepts a `url` form field). Recommended for large
+     images — they're fetched server-side and never base64-inlined into the browser. */
+  .url-row { display: flex; gap: 6px; margin-top: 8px; }
+  .url-row input {
+    flex: 1; background: var(--panel-2); border: 1px solid var(--border);
+    border-radius: 6px; padding: 7px 9px; color: var(--text); font-size: 12px; min-width: 0;
+  }
+  .url-row input:focus { outline: none; border-color: var(--accent); }
+  .url-row .btn { flex: 0 0 auto; }
 
   .action-row { display: flex; gap: 8px; margin-top: 10px; }
+  /* Engine selector inside the action row: keep it compact so it sits inline
+     with the 识别 button rather than stretching full-width. */
+  #engineSeg { width: 168px; flex: 0 0 auto; }
+  #engineSeg button { font-weight: 600; }
+  /* When the VLM engine is selected, the PaddleOCR tuning knobs (thresholds /
+     unclip / etc.) are irrelevant — dim the whole panel and show a one-line
+     note instead of letting the user tweak parameters that won't apply. */
+  #params.engine-vlm > summary { color: var(--muted); }
+  #params.engine-vlm::after {
+    content: "VLM 引擎：检测由 Qwen-VL 自动完成（粒度仍可选行/段落）";
+    display: block; color: var(--muted); font-size: 12px;
+    padding: 0 14px 12px; font-style: italic;
+  }
   .btn {
     flex: 1; padding: 9px; border-radius: 6px; border: 1px solid var(--border);
     background: var(--panel-2); color: var(--text); font-size: 13px; cursor: pointer; font-weight: 500;
@@ -399,7 +422,15 @@
         <div class="filename" id="filename"></div>
         <input type="file" id="fileInput" accept="image/*" hidden>
       </div>
+      <div class="url-row">
+        <input type="text" id="urlInput" placeholder="或粘贴图片链接（http/https）· 大图推荐用链接" autocomplete="off">
+        <button class="btn" id="loadUrlBtn" type="button">加载</button>
+      </div>
       <div class="action-row">
+        <div class="seg" id="engineSeg" title="OCR 引擎：PaddleOCR（本地，快）或 VLM（Qwen-VL，艺术字/二维码更强）">
+          <button data-v="paddleocr" class="active">PaddleOCR</button>
+          <button data-v="vlm">VLM</button>
+        </div>
         <button class="btn primary" id="recognizeBtn" disabled>▶ 识别</button>
         <button class="btn" id="splitPanelsBtn" disabled>⊞ 拆面</button>
         <button class="btn" id="understandBtn" disabled>✦ AI 理解</button>
@@ -577,6 +608,22 @@
           <input type="checkbox" id="cfg_vlm_ocr_fallback">
           <span class="track"></span>
         </label>
+      </div>
+
+      <div class="master-switch" style="margin-top:8px">
+        <div>
+          <div class="ms-label">VLM OCR 引擎</div>
+          <div class="ms-hint">开启后可选用 VLM 引擎识别（识别按钮旁切换）。Qwen-VL 框选所有文字/艺术字/二维码/条码，需总开关 + API key</div>
+        </div>
+        <label class="toggle">
+          <input type="checkbox" id="cfg_vlm_ocr_enabled">
+          <span class="track"></span>
+        </label>
+      </div>
+      <div class="field" id="cfg_vlm_ocr_model_group" style="padding:0 0 4px">
+        <label>VLM OCR 模型（留空=复用上方 model）</label>
+        <input type="text" id="cfg_vlm_ocr_model" placeholder="留空则复用默认 model（建议 grounding 强的模型）">
+        <div class="hint">如 qwen2.5-vl-72b-instruct 等定位能力强的模型；空值复用 model</div>
       </div>
 
       <div class="param-group" style="padding:0">
@@ -984,7 +1031,7 @@ $('reset').onclick=fit; $('fit').onclick=fit;
 // params state
 // =========================================================================
 const DEFAULTS = { thresh:0.3, box:0.6, unclip:1.8, sidelen:960, limittype:'max',
-                   rec:0, orient:true, gap:0.6, xov:0.3, gran:'line' };
+                   rec:0, orient:true, gap:0.6, xov:0.3, gran:'line', engine:'paddleocr' };
 const params = {...DEFAULTS};
 
 function syncParamUI() {
@@ -998,12 +1045,37 @@ function syncParamUI() {
   $('p_gap').value = params.gap; $('v_gap').textContent = params.gap.toFixed(2);
   $('p_xov').value = params.xov; $('v_xov').textContent = params.xov.toFixed(2);
   document.querySelectorAll('#granSeg button').forEach(b=>b.classList.toggle('active', b.dataset.v===params.gran));
+  document.querySelectorAll('#engineSeg button').forEach(b=>b.classList.toggle('active', b.dataset.v===params.engine));
+  syncEngineUI();
   syncParaGroup();
   markChanged();
 }
 function syncParaGroup() {
   $('paraGroup').style.display = params.gran === 'paragraph' ? '' : 'none';
 }
+function syncEngineUI() {
+  // VLM engine: the PaddleOCR tuning knobs (thresholds/unclip/etc.) are
+  // irrelevant — collapse that panel and note that the VLM decides its own
+  // detection. Output granularity still applies (line/paragraph merge runs
+  // engine-neutral on the server).
+  const vlm = params.engine === 'vlm';
+  const pnl = $('params');
+  if (vlm) {
+    pnl.classList.add('engine-vlm');
+    pnl.open = false;
+  } else {
+    pnl.classList.remove('engine-vlm');
+  }
+  // The VLM engine segment doubles as the affordance — keep the recognize
+  // button label neutral; status line reports which engine ran after.
+}
+// engine segment: paddleocr vs vlm
+document.querySelectorAll('#engineSeg button').forEach(b=>b.addEventListener('click',()=>{
+  params.engine = b.dataset.v;
+  document.querySelectorAll('#engineSeg button').forEach(x=>x.classList.toggle('active',x===b));
+  syncEngineUI();
+  markChanged();
+}));
 function markChanged() {
   const changed = JSON.stringify(params) !== JSON.stringify(DEFAULTS);
   $('paramBadge').classList.toggle('show', changed);
@@ -1039,18 +1111,26 @@ $('resetParams').onclick = () => { Object.assign(params, DEFAULTS); syncParamUI(
 // Build OCROptions JSON for /analyze. Granularity is always sent explicitly;
 // paragraph knobs are sent whenever paragraph mode is active.
 function buildOptions() {
-  const o = { granularity: params.gran };
+  const o = {};
+  // engine: paddleocr (local DB++) or vlm (Qwen-VL grounding). Sent on every
+  // request so the server runs the chosen path; granularity still applies to
+  // both (line/paragraph) since paragraph merge is engine-neutral.
+  if (params.engine && params.engine !== 'paddleocr') o.engine = params.engine;
+  o.granularity = params.gran;
   if (params.gran === 'paragraph') {
     o.paragraph_gap_ratio = params.gap;
     o.paragraph_x_overlap = params.xov;
   }
-  if (params.thresh !== DEFAULTS.thresh) o.text_det_thresh = params.thresh;
-  if (params.box !== DEFAULTS.box) o.text_det_box_thresh = params.box;
-  if (params.unclip !== DEFAULTS.unclip) o.text_det_unclip_ratio = params.unclip;
-  if (params.sidelen !== DEFAULTS.sidelen) o.text_det_limit_side_len = params.sidelen;
-  if (params.limittype !== DEFAULTS.limittype) o.text_det_limit_type = params.limittype;
-  if (params.rec > 0) o.text_rec_score_thresh = params.rec;
-  if (params.orient !== DEFAULTS.orient) o.use_textline_orientation = params.orient;
+  // PaddleOCR tuning knobs only matter for the paddleocr engine.
+  if (params.engine !== 'vlm') {
+    if (params.thresh !== DEFAULTS.thresh) o.text_det_thresh = params.thresh;
+    if (params.box !== DEFAULTS.box) o.text_det_box_thresh = params.box;
+    if (params.unclip !== DEFAULTS.unclip) o.text_det_unclip_ratio = params.unclip;
+    if (params.sidelen !== DEFAULTS.sidelen) o.text_det_limit_side_len = params.sidelen;
+    if (params.limittype !== DEFAULTS.limittype) o.text_det_limit_type = params.limittype;
+    if (params.rec > 0) o.text_rec_score_thresh = params.rec;
+    if (params.orient !== DEFAULTS.orient) o.use_textline_orientation = params.orient;
+  }
   return o;
 }
 
@@ -1068,12 +1148,12 @@ view.candidates = [];
 view.splitMode = false;
 
 async function startSplit() {
-  if (!currentFile) return;
+  if (!hasImage()) return;
   $('splitPanelsBtn').disabled = true;
   setStatus('VLM 找切割线中（512px 缩略,约几秒）…', 'busy');
   try {
     const fd = new FormData();
-    fd.append('file', currentFile);
+    appendImage(fd);
     const r = await fetch('/panels/vlm?preview=true', { method: 'POST', body: fd });
     if (!r.ok) throw new Error(`HTTP ${r.status}: ${(await r.text()).slice(0, 200)}`);
     const data = await r.json();
@@ -1116,7 +1196,7 @@ function cancelSplit() {
 }
 
 async function confirmSplit() {
-  if (!currentFile) return;
+  if (!hasImage()) return;
   const hs = view.candidates.filter(c => c.orientation === 'h' && c.selected).map(c => c.pos);
   const vs = view.candidates.filter(c => c.orientation === 'v' && c.selected).map(c => c.pos);
   $('confirmSplitBtn').disabled = true;
@@ -1129,7 +1209,7 @@ async function confirmSplit() {
     fd.append('v_lines', JSON.stringify(vs));
     fd.append('width', w);
     fd.append('height', h);
-    fd.append('file', currentFile);  // server reads image from file upload
+    appendImage(fd);  // server reads image from file upload
     const r = await fetch('/panels/compute', { method: 'POST', body: fd });
     if (!r.ok) throw new Error(`HTTP ${r.status}: ${(await r.text()).slice(0, 200)}`);
     const data = await r.json();
@@ -1267,6 +1347,8 @@ function applyVlmConfig(d) {
   _setModelSelect(d.model || 'qwen3.7-plus');
   $('cfg_vlm_enabled').checked = !!d.vlm_enabled;
   $('cfg_vlm_ocr_fallback').checked = !!d.vlm_ocr_fallback_enabled;
+  $('cfg_vlm_ocr_enabled').checked = !!d.vlm_ocr_enabled;
+  $('cfg_vlm_ocr_model').value = d.vlm_ocr_model || '';
   $('cfg_understand').checked = !!d.understand_enabled;
   $('cfg_thinking').checked = !!d.enable_thinking;
   // Never put the real key in the field. Show the masked form as a hint + badge.
@@ -1305,6 +1387,8 @@ async function saveVlmConfig() {
     api_key: $('cfg_apikey').value || null,   // empty → backend keeps stored key
     vlm_enabled: $('cfg_vlm_enabled').checked,
     vlm_ocr_fallback_enabled: $('cfg_vlm_ocr_fallback').checked,
+    vlm_ocr_enabled: $('cfg_vlm_ocr_enabled').checked,
+    vlm_ocr_model: $('cfg_vlm_ocr_model').value.trim() || null,
     understand_enabled: $('cfg_understand').checked,
     enable_thinking: $('cfg_thinking').checked,
   };
@@ -1334,12 +1418,12 @@ async function saveVlmConfig() {
 $('understandBtn').addEventListener('click', understand);
 
 async function understand() {
-  if (!currentFile) return;
+  if (!hasImage()) return;
   $('understandBtn').disabled = true;
   setStatus('AI 理解中（Agent 多轮推理,请稍候）…', 'busy');
   try {
     const fd = new FormData();
-    fd.append('file', currentFile);
+    appendImage(fd);
     // The agent endpoint: qwen3-max brain + VLM/OCR tools, returns conclusion + trace.
     const r = await fetch('/agent/understand', { method: 'POST', body: fd });
     if (!r.ok) throw new Error(`HTTP ${r.status}: ${(await r.text()).slice(0, 200)}`);
@@ -1433,7 +1517,7 @@ $('runVerifyBtn').addEventListener('click', runVerify);
 
 // Enable the run button only when there's an image AND non-empty standard text.
 function syncVerifyRunBtn() {
-  $('runVerifyBtn').disabled = !(currentFile && $('verifyStandard').value.trim());
+  $('runVerifyBtn').disabled = !(hasImage() && $('verifyStandard').value.trim());
 }
 $('verifyStandard').addEventListener('input', syncVerifyRunBtn);
 
@@ -1464,7 +1548,7 @@ function buildStandard() {
 }
 
 async function runVerify() {
-  if (!currentFile) return;
+  if (!hasImage()) return;
   const entries = buildStandard();
   if (!entries.length) {
     setStatus('请先填写至少一条标准文案', 'error');
@@ -1474,7 +1558,7 @@ async function runVerify() {
   setStatus('OCR + 文案校验中…', 'busy');
   try {
     const fd = new FormData();
-    fd.append('file', currentFile);
+    appendImage(fd);
     fd.append('standard', JSON.stringify(entries));
     const opt = buildOptions();
     if (opt && Object.keys(opt).length) fd.append('options', JSON.stringify(opt));
@@ -1629,6 +1713,7 @@ function renderUnderstanding(d) {
 // upload + recognize flow
 // =========================================================================
 let currentFile = null;
+let currentUrl = null;      // when set, actions send `url` instead of `file`
 let currentObjectUrl = null;
 const dz = $('dropzone'), fileInput = $('fileInput');
 dz.addEventListener('click', () => fileInput.click());
@@ -1637,11 +1722,30 @@ dz.addEventListener('click', () => fileInput.click());
 dz.addEventListener('drop', ev=>{ if(ev.dataTransfer.files[0]) handleFile(ev.dataTransfer.files[0]); });
 fileInput.addEventListener('change', ()=>{ if(fileInput.files[0]) handleFile(fileInput.files[0]); });
 
+// Helpers so every action (recognize/split/understand/verify) sends the image
+// the same way whether it came from a local file or a pasted URL. The server's
+// /analyze (and friends) accept either `file` or `url`; file wins only when no
+// URL is set. Returns true when the FormData now carries an image.
+function hasImage() { return !!(currentFile || currentUrl); }
+function appendImage(fd) {
+  if (currentUrl) { fd.append('url', currentUrl); return true; }
+  if (currentFile) { fd.append('file', currentFile); return true; }
+  return false;
+}
+
 // Initial UI state (now that currentFile is declared). Sets the verify button
 // disabled until both an image and standard-copy text are present.
 syncVerifyRunBtn();
 
 function updateFilenameDisplay(w, h) {
+  // URL input: show the link + dimensions (no byte size — bytes aren't known
+  // until the server fetches; we only know pixel size once the <img> loads).
+  if (currentUrl && !currentFile) {
+    let text = `🔗 ${currentUrl}`;
+    if (w > 0 && h > 0) text += ` · ${w}×${h}px`;
+    $('filename').textContent = text;
+    return;
+  }
   if (!currentFile) return;
   const sizeKb = (currentFile.size / 1024).toFixed(0);
   let text = `📎 ${currentFile.name} (${sizeKb} KB`;
@@ -1652,7 +1756,10 @@ function updateFilenameDisplay(w, h) {
 
 function handleFile(file) {
   if (!file.type.startsWith('image/')) { setStatus('只支持图片文件','error'); return; }
+  // A newly-loaded file takes over from any previously-loaded URL.
   currentFile = file;
+  currentUrl = null;
+  $('urlInput').value = '';
   if (currentObjectUrl) URL.revokeObjectURL(currentObjectUrl);
   currentObjectUrl = URL.createObjectURL(file);
   updateFilenameDisplay(0, 0);
@@ -1664,7 +1771,12 @@ function handleFile(file) {
   $('splitToolbar').style.display = 'none';
   drawPolygons();
   showImage(currentObjectUrl);
-  // enable recognize button, reset results
+  _activateImage();
+}
+
+// Shared tail of handleFile / handleUrl: reset result state + enable the
+// action buttons. Called after the image is visible in the viewer.
+function _activateImage() {
   $('recognizeBtn').disabled = false;
   $('splitPanelsBtn').disabled = false;
   $('understandBtn').disabled = false;
@@ -1677,11 +1789,37 @@ function handleFile(file) {
   setStatus('图片已加载，点击「识别」','');
 }
 
+// Load an image from a pasted URL. The server's image endpoints accept a `url`
+// form field (fetched server-side), so we never inline the bytes into the
+// browser — ideal for large images. We still preview it here by pointing the
+// <img> at the URL directly (no canvas read needed; overlays are SVG).
+function handleUrl(rawUrl) {
+  const url = (rawUrl || '').trim();
+  if (!url) { setStatus('请输入图片链接', 'error'); return; }
+  if (!/^https?:\/\//i.test(url)) { setStatus('链接需以 http:// 或 https:// 开头', 'error'); return; }
+  // Switch input source: URL takes over from any previously-loaded file.
+  currentFile = null;
+  if (currentObjectUrl) { URL.revokeObjectURL(currentObjectUrl); currentObjectUrl = null; }
+  currentUrl = url;
+  $('filename').textContent = `🔗 ${url}`;
+  view.items = []; view.panels = []; view.candidates = []; view.splitMode = false; view.subject = null;
+  view.selectedIdx = -1; view.activeIdx = -1;
+  view.verify = null; view.verifySel = null; view.verifyHighlight = null;
+  $('verifyResults').innerHTML = '';
+  $('splitToolbar').style.display = 'none';
+  drawPolygons();
+  showImage(url);
+  _activateImage();
+}
+$('loadUrlBtn').addEventListener('click', () => handleUrl($('urlInput').value));
+$('urlInput').addEventListener('keydown', e => { if (e.key === 'Enter') handleUrl($('urlInput').value); });
+
 $('recognizeBtn').addEventListener('click', recognize);
 $('clearBtn').addEventListener('click', clearAll);
 
 function clearAll() {
   currentFile = null;
+  currentUrl = null;
   if (currentObjectUrl) { URL.revokeObjectURL(currentObjectUrl); currentObjectUrl = null; }
   view.items = []; view.panels = []; view.understanding = null;
   view.selectedIdx = -1; view.activeIdx = -1;
@@ -1692,6 +1830,7 @@ function clearAll() {
   canvas.style.display = 'none';
   $('hud').style.display = 'none'; $('hint').style.display = 'none';
   $('filename').textContent = '';
+  $('urlInput').value = '';
   $('recognizeBtn').disabled = true;
   $('splitPanelsBtn').disabled = true;
   $('understandBtn').disabled = true;
@@ -1707,10 +1846,10 @@ function clearAll() {
 }
 
 async function recognize() {
-  if (!currentFile) return;
+  if (!hasImage()) return;
   const opt = buildOptions();
   const fd = new FormData();
-  fd.append('file', currentFile);
+  appendImage(fd);
   fd.append('options', JSON.stringify(opt));
 
   $('recognizeBtn').disabled = true;
@@ -1738,7 +1877,8 @@ async function recognize() {
     render(data);
     const elapsed = formatElapsed(performance.now() - t0);
     const gran = data.options_used?.granularity || params.gran;
-    setStatus(`完成 · ${data.items.length} 项 · ${data.image_meta.tile_count} tile · ${gran} · ${elapsed}`, 'ok');
+    const eng = (data.options_used?.engine) || params.engine;
+    setStatus(`完成 · ${data.items.length} 项 · ${data.image_meta.tile_count} tile · ${eng} · ${gran} · ${elapsed}`, 'ok');
   } catch (err) {
     setStatus(`错误: ${err.message} · ${formatElapsed(performance.now() - t0)}`, 'error');
     console.error(err);

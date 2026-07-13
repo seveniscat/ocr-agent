@@ -14,6 +14,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 Granularity = Literal["word", "line", "paragraph"]
 OcrVersion = Literal["PP-OCRv6", "PP-OCRv5"]
+OcrEngine = Literal["paddleocr", "vlm"]
 
 # Canonical project .env location (project root = parent of app/). config reads
 # from here and envstore writes to here, so edits made via the UI /config/vlm
@@ -169,6 +170,50 @@ class Settings(BaseSettings):
                     "answer). Off by default: thinking mode is incompatible with "
                     "response_format=json_object, so JSON output relies on our "
                     "tolerant parser instead. Turn on for QA-reasoning tasks.",
+    )
+
+    # ---- VLM OCR engine (Qwen-VL grounding OCR; alternative to PaddleOCR) ----
+    # When selected (per-request ``engine=vlm`` or ocr_engine_default="vlm"),
+    # the pipeline runs Qwen-VL on each tile instead of PaddleOCR. The VLM
+    # returns normalized [x1,y1,x2,y2] boxes for every text/art_text/qr/barcode
+    # it sees, mapped back to pixel coords. Codes are also run through pyzbar
+    # (reliable decoding) and merged by the standard dedupe stage.
+    # Requires vlm_enabled + API key. PaddleOCR stays the default.
+    vlm_ocr_enabled: bool = Field(
+        False,
+        description="Master switch for the VLM OCR engine (POST /analyze with "
+                    "engine=vlm). Requires vlm_enabled + API key.",
+    )
+    vlm_ocr_model: str = Field(
+        "",
+        description="Vision model for VLM OCR grounding. Empty = reuse "
+                    "vlm_model. Pin a grounding-strong model (e.g. "
+                    "qwen2.5-vl-72b-instruct) independent of the art-text "
+                    "fallback / understanding model.",
+    )
+    vlm_ocr_max_side: int = Field(
+        2048, ge=512, le=4096,
+        description="Long-edge px each tile is downscaled to before the VLM "
+                    "grounds boxes. The pipeline tiles the image so each tile "
+                    "is already ≤ this; downscaling only further trims tokens. "
+                    "Normalized coords are scaled by the TILE size (pre-downscale) "
+                    "so precision is bounded by tile_target_size, not this.",
+    )
+    vlm_ocr_confidence: float = Field(
+        0.8, ge=0.0, le=1.0,
+        description="Flat confidence assigned to VLM-grounded items (Qwen-VL "
+                    "gives no native score). 0.8 mirrors the art-text fallback "
+                    "convention.",
+    )
+
+    # ---- OCR engine default ----
+    # Which engine /analyze runs when the request omits ``engine``. The UI can
+    # still override per-request. PaddleOCR (local, deterministic) is the safe
+    # default; set to "vlm" to default to the cloud vision model.
+    ocr_engine_default: OcrEngine = Field(
+        "paddleocr",
+        description="Default OCR engine when the request doesn't specify one: "
+                    "paddleocr (local DB++ det+rec) or vlm (Qwen-VL grounding).",
     )
 
     # ---- AI Native understanding layer (``POST /understand``) ----

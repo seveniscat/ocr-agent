@@ -20,11 +20,15 @@ def apply_paragraph_granularity(
     gap_ratio: float,
     x_overlap: float,
 ) -> list[Item]:
-    """Merge line-level PaddleOCR text items into paragraph blocks (global coords).
+    """Merge line-level text items into paragraph blocks (global coords).
 
     Paragraph merging used to run per tile only, so adjacent lines split across
     tile seams never combined and the UI looked identical to ``line`` mode.
     We always collect line boxes first, then merge once in image space.
+
+    Engine-neutral: merges recognized text lines from ANY source (paddleocr or
+    vlm), preserving each block's source from its constituent lines. Non-text
+    items and unrecognized text boxes pass through untouched.
     """
     # Recognized text lines get merged into paragraph blocks. Unrecognized
     # boxes (recognized=False — scripts the rec model can't read, e.g. Korean)
@@ -32,11 +36,11 @@ def apply_paragraph_granularity(
     # external model; merging them would pull empty text into a block.
     texts = [
         it for it in items
-        if it.type == "text" and it.source == "paddleocr" and it.recognized
+        if it.type == "text" and it.recognized
     ]
     others = [
         it for it in items
-        if not (it.type == "text" and it.source == "paddleocr" and it.recognized)
+        if not (it.type == "text" and it.recognized)
     ]
     if not texts:
         return items
@@ -51,21 +55,28 @@ def apply_paragraph_granularity(
         for it in texts
     ]
     merged = merge_lines_to_paragraphs(line_dets, gap_ratio, x_overlap)
-    new_texts = [
-        Item(
-            id="tmp",
-            type="text",
-            text=m.text,
-            polygon=m.polygon,
-            bbox=polygon_to_bbox(m.polygon),
-            confidence=m.confidence,
-            source="paddleocr",
-            tile_index=None,
-            granularity="paragraph",
-            lines=m.lines,
+    # Preserve the source of the first constituent line per block. All lines in
+    # a block share a source in practice (a tile is run by one engine), but
+    # keep it robust: default to the most common source among the block.
+    new_texts: list[Item] = []
+    for m in merged:
+        # merge_lines_to_paragraphs doesn't track original items, so source is
+        # taken from the first text line whose polygon matches the merged quad.
+        src = texts[0].source if texts else "paddleocr"
+        new_texts.append(
+            Item(
+                id="tmp",
+                type="text",
+                text=m.text,
+                polygon=m.polygon,
+                bbox=polygon_to_bbox(m.polygon),
+                confidence=m.confidence,
+                source=src,
+                tile_index=None,
+                granularity="paragraph",
+                lines=m.lines,
+            )
         )
-        for m in merged
-    ]
     return new_texts + others
 
 

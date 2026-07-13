@@ -172,6 +172,8 @@ class VLMConfigUpdate(BaseModel):
     api_key: str | None = None  # None/"" → don't touch the stored key
     vlm_enabled: bool | None = None
     vlm_ocr_fallback_enabled: bool | None = None
+    vlm_ocr_enabled: bool | None = None
+    vlm_ocr_model: str | None = None
     understand_enabled: bool | None = None
     enable_thinking: bool | None = None
 
@@ -188,6 +190,8 @@ def _vlm_config_payload(s: "Settings") -> dict:
         "has_key": bool(s.vlm_api_key),
         "vlm_enabled": s.vlm_enabled,
         "vlm_ocr_fallback_enabled": s.vlm_ocr_fallback_enabled,
+        "vlm_ocr_enabled": s.vlm_ocr_enabled,
+        "vlm_ocr_model": s.vlm_ocr_model,
         "understand_enabled": s.understand_enabled,
         "enable_thinking": s.vlm_enable_thinking,
     }
@@ -224,6 +228,12 @@ def save_vlm_config(body: VLMConfigUpdate) -> JSONResponse:
         writes.append(
             ("OCR_VLM_OCR_FALLBACK_ENABLED", str(body.vlm_ocr_fallback_enabled).lower())
         )
+    if body.vlm_ocr_enabled is not None:
+        writes.append(
+            ("OCR_VLM_OCR_ENABLED", str(body.vlm_ocr_enabled).lower())
+        )
+    if body.vlm_ocr_model is not None:
+        writes.append(("OCR_VLM_OCR_MODEL", body.vlm_ocr_model))
     if body.understand_enabled is not None:
         writes.append(("OCR_UNDERSTAND_ENABLED", str(body.understand_enabled).lower()))
     if body.enable_thinking is not None:
@@ -308,9 +318,17 @@ async def analyze(
         # either — even "small" images can take a couple seconds.
         pipeline = _get_pipeline()
         loop = asyncio.get_event_loop()
-        resp = await loop.run_in_executor(
-            _ocr_executor, lambda: pipeline.run(data, annotate=annotate, options=opt_obj)
-        )
+        try:
+            resp = await loop.run_in_executor(
+                _ocr_executor,
+                lambda: pipeline.run(
+                    data, annotate=annotate, options=opt_obj, image_url=url
+                ),
+            )
+        except RuntimeError as exc:
+            # Engine misconfiguration (e.g. engine=vlm but VLM OCR disabled / no
+            # key). Surface as a clear 503 instead of an opaque 500.
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
         logger.info(
             "/analyze sync %dx%d %s items=%d %.2fs",
             w, h, src, len(resp.items), time.perf_counter() - t_start,
@@ -346,7 +364,9 @@ async def analyze(
         try:
             _tasks[task_id].status = "running"
             pipeline = _get_pipeline()
-            resp = pipeline.run(data, annotate=annotate, options=opt_obj)
+            resp = pipeline.run(
+                data, annotate=annotate, options=opt_obj, image_url=url
+            )
             _tasks[task_id].result = resp
             _tasks[task_id].status = "done"
             logger.info(

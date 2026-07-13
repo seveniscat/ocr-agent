@@ -107,6 +107,7 @@ class Pipeline:
         image_data: bytes,
         annotate: bool = False,
         options: "OCROptions | None" = None,
+        image_url: str | None = None,
     ) -> AnalyzeResponse:
         t0 = time.perf_counter()
         img = load_image(image_data)
@@ -132,98 +133,35 @@ class Pipeline:
         t_pre = time.perf_counter() - t_pre
 
         max_side = max(w, h)
-        # ≤ small_image_threshold (default 4000): one tile → official predict() path.
-        target_size = (
-            max_side
-            if max_side <= self.settings.small_image_threshold
-            else self.settings.tile_target_size
-        )
-        grid = plan_grid(
-            w, h,
-            target_size=target_size,
-            overlap=self.settings.tile_overlap,
-        )
-        specs = tile_specs(grid)
+
+        # Resolve which engine to run. Per-request override wins; else server
+        # default. ``vlm`` routes through Qwen-VL grounding OCR (peer of the
+        # PaddleOCR path below); everything else is the local DB++ det+rec.
+        engine = "paddleocr"
+        if options is not None and options.engine:
+            engine = options.engine
+        elif self.settings.ocr_engine_default:
+            engine = self.settings.ocr_engine_default
 
         all_items: list[Item] = []
+        t_ocr = time.perf_counter()
 
-        ocr = self._get_ocr()
-        codes = self._get_codes_or_none()  # may be None (lib missing) → skip
+        if engine == "vlm":
+            all_items, grid = self._run_vlm_engine(img, image_url=image_url)
+        else:
+            all_items, grid = self._run_paddle_engine(img, w, h, max_side, options)
+        t_ocr = time.perf_counter() - t_ocr
+        n_after_ocr = len(all_items)
 
-        # Translate per-request OCR overrides to detector call args.
+        # Re-derive granularity + paragraph params from the request so the
+        # shared post-processing (paragraph merge etc.) applies to BOTH engines.
         if options is not None:
-            predict_kwargs = options.to_predict_kwargs()
             gran = options.granularity
             gap = options.paragraph_gap_ratio
             xov = options.paragraph_x_overlap
         else:
-            predict_kwargs, gran, gap, xov = {}, None, None, None
-
+            gran, gap, xov = None, None, None
         effective_gran = gran or self.settings.ocr_granularity
-        # Paragraph merge runs globally after all tiles; OCR always emits lines.
-        ocr_gran = "line" if effective_gran == "paragraph" else effective_gran
-
-        # Per-tile processing (the dominant cost on large images).
-        t_ocr = time.perf_counter()
-        for spec in specs:
-            tile = crop_tile(img, spec)
-
-            # --- text (primary channel; errors here are fatal) ---
-            for det in ocr.detect_and_recognize(
-                tile,
-                predict_kwargs=predict_kwargs,
-                granularity=ocr_gran,
-            ):
-                global_poly = offset_polygon(det.polygon, spec.x0, spec.y0)
-                # if paragraph mode, offset the per-line quads too
-                global_lines = None
-                if det.lines:
-                    global_lines = [
-                        offset_polygon(ln, spec.x0, spec.y0) for ln in det.lines
-                    ]
-                all_items.append(
-                    Item(
-                        id="tmp",
-                        type="text",
-                        text=det.text or None,
-                        polygon=global_poly,
-                        bbox=polygon_to_bbox(global_poly),
-                        confidence=det.confidence,
-                        source="paddleocr",
-                        tile_index=spec.index,
-                        granularity=det.granularity,
-                        lines=global_lines,
-                        recognized=det.recognized,
-                        crop_b64=det.crop_b64,
-                    )
-                )
-
-            # --- qr / barcode (best-effort; missing lib just skips this tile) ---
-            if codes is not None:
-                try:
-                    for det in codes.detect(tile):
-                        global_poly = offset_polygon(
-                            det.polygon, spec.x0, spec.y0
-                        )
-                        all_items.append(
-                            Item(
-                                id="tmp",
-                                type=det.type,  # "qr" | "barcode"
-                                content=det.content,
-                                polygon=global_poly,
-                                bbox=polygon_to_bbox(global_poly),
-                                confidence=det.confidence,
-                                source="pyzbar",
-                                tile_index=spec.index,
-                            )
-                        )
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning(
-                        "Code detection failed on tile %d, skipping: %s",
-                        spec.index, exc,
-                    )
-        t_ocr = time.perf_counter() - t_ocr
-        n_after_ocr = len(all_items)
 
         # --- merge same-line overlaps (mixed-script detection splits) BEFORE
         # dedupe. The detector often splits one line into two boxes when it
@@ -321,6 +259,148 @@ class Pipeline:
         return response
 
     # -- helpers ------------------------------------------------------------
+
+    def _run_vlm_engine(
+        self, img, image_url: str | None = None
+    ) -> tuple[list[Item], "GridSpec"]:
+        """Run the Qwen-VL grounding OCR engine over the (autocropped) image.
+
+        Returns ``(items, grid)`` where ``grid`` is the tiling plan (for the
+        ``image_meta.tile_count`` echo). Raises a clear error if VLM OCR is not
+        configured — the caller surfaces it.
+
+        When ``image_url`` is given, the VLM receives the public URL directly
+        (no tiling, no base64) — the preferred path for large images and the
+        one matching the proven calling convention. Otherwise the image is
+        tiled + base64'd per tile (fallback for multipart file uploads).
+        """
+        if not self.settings.vlm_enabled:
+            raise RuntimeError(
+                "VLM OCR requires OCR_VLM_ENABLED=true (and OCR_VLM_OCR_ENABLED)."
+            )
+        if not self.settings.vlm_ocr_enabled:
+            raise RuntimeError(
+                "VLM OCR engine is disabled (OCR_VLM_OCR_ENABLED=false). "
+                "Set it true to use engine=vlm."
+            )
+        try:
+            vlm = self._get_vlm()
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(
+                f"VLM unavailable for OCR: {exc}. "
+                "Set OCR_VLM_API_KEY / OCR_VLM_ENABLED."
+            ) from exc
+
+        from .vlm_ocr import run_vlm_ocr
+
+        items = run_vlm_ocr(img, vlm, self.settings, image_url=image_url)
+
+        # Re-derive the grid plan (same params run_vlm_ocr used) only for the
+        # tile_count echo — cheap, and keeps the response shape consistent.
+        h, w = img.shape[:2]
+        target = (
+            max(w, h)
+            if max(w, h) <= self.settings.vlm_ocr_max_side
+            else self.settings.vlm_ocr_max_side
+        )
+        grid = plan_grid(
+            w, h, target_size=target, overlap=self.settings.tile_overlap
+        )
+        return items, grid
+
+    def _run_paddle_engine(
+        self, img, w: int, h: int, max_side: int, options
+    ) -> tuple[list[Item], "GridSpec"]:
+        """Run the local PaddleOCR engine (per-tile det+rec + pyzbar codes).
+
+        Returns ``(items, grid)`` — same shape as :meth:`_run_vlm_engine` so the
+        shared post-processing in :meth:`run` is engine-neutral.
+        """
+        # ≤ small_image_threshold (default 4000): one tile → official predict() path.
+        target_size = (
+            max_side
+            if max_side <= self.settings.small_image_threshold
+            else self.settings.tile_target_size
+        )
+        grid = plan_grid(
+            w, h,
+            target_size=target_size,
+            overlap=self.settings.tile_overlap,
+        )
+        specs = tile_specs(grid)
+
+        all_items: list[Item] = []
+
+        ocr = self._get_ocr()
+        codes = self._get_codes_or_none()  # may be None (lib missing) → skip
+
+        # Translate per-request OCR overrides to detector call args.
+        if options is not None:
+            predict_kwargs = options.to_predict_kwargs()
+        else:
+            predict_kwargs = {}
+
+        # OCR always emits lines; paragraph merge runs globally after all tiles.
+        ocr_gran = "line"
+
+        for spec in specs:
+            tile = crop_tile(img, spec)
+
+            # --- text (primary channel; errors here are fatal) ---
+            for det in ocr.detect_and_recognize(
+                tile,
+                predict_kwargs=predict_kwargs,
+                granularity=ocr_gran,
+            ):
+                global_poly = offset_polygon(det.polygon, spec.x0, spec.y0)
+                # if paragraph mode, offset the per-line quads too
+                global_lines = None
+                if det.lines:
+                    global_lines = [
+                        offset_polygon(ln, spec.x0, spec.y0) for ln in det.lines
+                    ]
+                all_items.append(
+                    Item(
+                        id="tmp",
+                        type="text",
+                        text=det.text or None,
+                        polygon=global_poly,
+                        bbox=polygon_to_bbox(global_poly),
+                        confidence=det.confidence,
+                        source="paddleocr",
+                        tile_index=spec.index,
+                        granularity=det.granularity,
+                        lines=global_lines,
+                        recognized=det.recognized,
+                        crop_b64=det.crop_b64,
+                    )
+                )
+
+            # --- qr / barcode (best-effort; missing lib just skips this tile) ---
+            if codes is not None:
+                try:
+                    for det in codes.detect(tile):
+                        global_poly = offset_polygon(
+                            det.polygon, spec.x0, spec.y0
+                        )
+                        all_items.append(
+                            Item(
+                                id="tmp",
+                                type=det.type,  # "qr" | "barcode"
+                                content=det.content,
+                                polygon=global_poly,
+                                bbox=polygon_to_bbox(global_poly),
+                                confidence=det.confidence,
+                                source="pyzbar",
+                                tile_index=spec.index,
+                            )
+                        )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "Code detection failed on tile %d, skipping: %s",
+                        spec.index, exc,
+                    )
+        return all_items, grid
 
     def _maybe_vlm_fallback(
         self, img, items: list[Item]
