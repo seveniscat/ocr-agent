@@ -27,6 +27,7 @@ from fastapi import (
     Query,
     UploadFile,
 )
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -57,6 +58,27 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
+
+# CORS: an internal web UI (or any browser client) often runs on a different
+# host/port than this service; without these headers the browser blocks the
+# cross-origin XHR/fetch (curl still works, masking the issue). Allowed origins
+# come from OCR_CORS_ORIGINS — '*' (default) for trusted intranets, or an
+# explicit allow-list in production. Empty string disables CORS entirely.
+_cors_raw = get_settings().cors_origins.strip()
+if _cors_raw:
+    _origins = (
+        ["*"] if _cors_raw == "*" else [o.strip() for o in _cors_raw.split(",") if o.strip()]
+    )
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+    logger.info("CORS allowed origins: %s", _origins)
+else:
+    logger.info("CORS disabled (OCR_CORS_ORIGINS empty)")
 
 # Dedicated thread pool for large-image OCR. pipeline.run() is a heavy
 # SYNCHRONOUS call (CPU + serial cloud VLM calls); running it on FastAPI's

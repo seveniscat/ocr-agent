@@ -331,6 +331,18 @@ class Settings(BaseSettings):
                     "there; flag for review). Below this → 'missing'.",
     )
 
+    # ---- HTTP / CORS ----
+    # Comma-separated list of origins allowed by the browser for cross-origin
+    # XHR/fetch calls (e.g. an internal web UI on a different host/port). "*"
+    # allows any origin — fine for a trusted intranet; for production set an
+    # explicit allow-list, e.g. "http://10.1.93.196:3000,http://foo.corp".
+    # Empty string disables CORS entirely (no middleware attached).
+    cors_origins: str = Field(
+        "*",
+        description="Comma-separated allowed CORS origins, or '*' for any. "
+                    "Empty to disable CORS.",
+    )
+
     # ---- Annotator ----
     annotator_line_width: int = 3
 
