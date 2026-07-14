@@ -189,6 +189,52 @@ def test_pipeline_vlm_fallback_uses_batch(monkeypatch):
     assert out[2].source == "vlm_fallback"
 
 
+def test_pipeline_vlm_fallback_logs_sent_rescued_empty(monkeypatch, caplog):
+    """The summary log line records how many crops were sent, how many the VLM
+    rescued (non-empty text), and how many came back empty. This is the single
+    line operators use to tell whether the VLM actually worked."""
+    import logging
+
+    pipe = Pipeline(Settings())
+    s = pipe.settings.model_copy(update={
+        "vlm_enabled": True,
+        "vlm_ocr_fallback_enabled": True,
+        "rec_confidence_fallback": 0.99,
+        "circular_detect_enabled": False,  # keep this test about suspects only
+    })
+    pipe.settings = s
+
+    # 3 suspects: 2 will be rescued, 1 comes back empty.
+    items = [
+        Item(id="t1", type="text", text="?", polygon=[[0, 0], [9, 0], [9, 9], [0, 9]],
+             bbox=[0, 0, 9, 9], confidence=0.1, source="paddleocr"),
+        Item(id="t2", type="text", text="?", polygon=[[0, 0], [9, 0], [9, 9], [0, 9]],
+             bbox=[0, 0, 9, 9], confidence=0.2, source="paddleocr"),
+        Item(id="t3", type="text", text="?", polygon=[[0, 0], [9, 0], [9, 9], [0, 9]],
+             bbox=[0, 0, 9, 9], confidence=0.3, source="paddleocr"),
+    ]
+
+    class _FakeVLM:
+        def recognize_crops_with_prompts_batch(self, image, crops):
+            # 2 non-empty (rescued) + 1 empty (VLM couldn't read it).
+            return [("GOOD1", 0.8), ("GOOD2", 0.8), ("", 0.0)]
+
+    monkeypatch.setattr(pipe, "_get_vlm", lambda: _FakeVLM())
+
+    with caplog.at_level(logging.INFO, logger="app.pipeline"):
+        out, n_crops = pipe._maybe_vlm_fallback(_img(), items)
+
+    assert n_crops == 3
+    # Find the summary line and check its counts.
+    summary = [r.message for r in caplog.records if "vlm fallback" in r.message]
+    assert summary, f"no vlm fallback summary logged; got {[r.message for r in caplog.records]}"
+    line = summary[-1]
+    assert "sent=3" in line
+    assert "rescued=2" in line
+    assert "empty=1" in line
+    assert "threshold=0.99" in line
+
+
 # ---------------------------------------------------------------------------
 # Pipeline._drop_low_confidence — /analyze confidence policy (drop < threshold)
 # ---------------------------------------------------------------------------

@@ -506,14 +506,19 @@ class Pipeline:
         try:
             recognized = vlm.recognize_crops_with_prompts_batch(img, crops)
         except Exception as exc:  # noqa: BLE001 — best-effort; keep originals
-            logger.warning("VLM batch fallback failed, keeping originals: %s", exc)
+            logger.warning(
+                "vlm fallback FAILED: sent=%d all kept (originals), error: %s",
+                len(crops), exc,
+            )
             return items, len(crops)
 
         # --- write results back (geometry unchanged) ---
         out = list(items)
+        n_rescued = n_empty = 0
         # Low-confidence suspects: 1:1 text replacement.
         for idx, (new_text, new_conf) in zip(suspect_idx, recognized[:len(suspect_idx)]):
             if new_text:
+                n_rescued += 1
                 out[idx] = out[idx].model_copy(
                     update={
                         "text": new_text,
@@ -521,6 +526,8 @@ class Pipeline:
                         "source": "vlm_fallback",
                     }
                 )
+            else:
+                n_empty += 1
         # Circular regions: the VLM read the WHOLE ring as one string. Put it on
         # the representative member (top-most by bbox y1); leave other members'
         # text alone so the ring string isn't duplicated across boxes.
@@ -528,6 +535,7 @@ class Pipeline:
         for region, (new_text, new_conf) in zip(circular, circle_results):
             if not new_text or not region.member_indices:
                 continue
+            n_rescued += 1
             rep = min(region.member_indices, key=lambda i: items[i].bbox[1])
             out[rep] = out[rep].model_copy(
                 update={
@@ -536,6 +544,12 @@ class Pipeline:
                     "source": "vlm_fallback",
                 }
             )
+        logger.info(
+            "vlm fallback: sent=%d rescued=%d empty=%d "
+            "(suspects=%d rings=%d threshold=%.2f)",
+            len(crops), n_rescued, n_empty,
+            len(suspect_idx), len(circular), threshold,
+        )
         return out, len(crops)
 
     def _drop_low_confidence(self, items: list[Item]) -> list[Item]:
