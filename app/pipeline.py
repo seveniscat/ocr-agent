@@ -31,6 +31,18 @@ from .tiling import (
 
 logger = logging.getLogger(__name__)
 
+# Prompt for the circular-region VLM read. A whole ring (logo/seal/badge text on
+# an arc) is cropped as its bounding box and sent with this prompt — the VLM is
+# asked to read the characters around the ring. We do NOT polar-unroll here
+# (path A): rely on the VLM's understanding of arc layout. If this proves
+# unreliable on dense rings, the upgrade path is cv2.warpPolar before sending.
+_CIRCULAR_PROMPT = (
+    "这是包装上沿圆弧/环形排布的文字（圆形 logo、印章、徽章上的弧形文字）。"
+    "请按顺时针方向，从顶部（12 点钟方向）开始，原样读出环上所有可见文字。"
+    "用 / 分隔各段弧形文字（如顶部和底部是两段）。"
+    "只输出文字本身，不要解释、不要引号。如果该区域没有文字，只输出: EMPTY"
+)
+
 
 class Pipeline:
     """Stateful coordinator holding lazily-loaded model handles."""
@@ -405,21 +417,32 @@ class Pipeline:
     def _maybe_vlm_fallback(
         self, img, items: list[Item]
     ) -> tuple[list[Item], int]:
-        """Re-recognize low-confidence text crops via the VLM, in BATCH.
+        """Re-recognize hard text regions via the VLM: low-confidence crops AND
+        circular/ring-shaped regions.
 
-        Collects every text item below the confidence threshold, sends ALL of
-        them to the VLM in as few multi-image calls as possible
-        (``recognize_crops_batch`` packs ~20 crops per request), then writes the
-        recognized text back into the items. Geometry (polygon/bbox) stays from
-        the expert detector — the VLM only supplies text.
+        Two kinds of "hard" regions are collected and sent to the VLM in one
+        batched, concurrent pass (8-way thread pool — N crops = N independent
+        HTTP calls, NOT a packed multi-image request):
 
-        Items stay ``type=text`` (not ``art_text``): art_text is for stylized
-        glyphs; VLM here is a confidence booster (e.g. wrong Paddle lang model).
+        - **Low-confidence suspects**: text items below ``rec_confidence_fallback``
+          (default 0.95). Sent with the provider's built-in art-text prompt.
+        - **Circular regions**: rings of text around logos/seals/badges, found by
+          :func:`app.regions.detect_circular_regions` (pure geometry). Each whole
+          ring is cropped as its bounding box and sent with ``_CIRCULAR_PROMPT``
+          — the VLM reads the arc-arranged characters. Members of a detected
+          ring are EXCLUDED from the low-confidence set so they aren't sent
+          twice.
 
-        Returns ``(items, n_crops)``: ``n_crops`` is the number of crops sent
-        (not the number of API calls), so the timing log still shows how many
-        suspicious regions were inspected. The actual speedup is in the API
-        call count, which is ~⌈n_crops / batch_size⌉ instead of n_crops.
+        Geometry (polygon/bbox) ALWAYS stays from PaddleOCR — the VLM only
+        supplies text. Results are written back with ``source="vlm_fallback"``.
+        For a circular region, the recognized ring text goes onto ONE
+        representative member (the top-most); other members keep their original
+        text to avoid duplicating the ring string across several boxes.
+
+        Returns ``(items, n_crops)``: ``n_crops`` is the total number of crops
+        sent (suspects + rings), so the timing log reflects how many regions
+        were inspected. On any VLM/circle failure the originals are kept
+        (best-effort — this stage must never break the main OCR path).
         """
         if not self.settings.vlm_enabled or not self.settings.vlm_ocr_fallback_enabled:
             return items, 0
@@ -430,27 +453,49 @@ class Pipeline:
             return items, 0
 
         threshold = self.settings.rec_confidence_fallback
-        # Collect the indices + polygons of every suspect item, then send them
-        # to the VLM in one batched call (the provider chunks internally).
+
+        # --- circular regions: find rings first so their members can be pulled
+        # out of the low-confidence suspect set (avoid double-sending). ---
+        circular = []
+        try:
+            from .regions import detect_circular_regions
+            circular = detect_circular_regions(img, items, self.settings)
+        except Exception as exc:  # noqa: BLE001 — gain-only; never break OCR
+            logger.warning("circular detection failed, skipping: %s", exc)
+        circle_member_idx: set[int] = set()
+        for r in circular:
+            circle_member_idx.update(r.member_indices)
+
+        # --- low-confidence suspects (excluding ring members) ---
         suspect_idx = [
             i for i, it in enumerate(items)
             if it.type == "text"
             and it.source == "paddleocr"
             and it.confidence < threshold
+            and i not in circle_member_idx
         ]
-        if not suspect_idx:
+
+        # Build one (polygon, prompt) list for both kinds → single batched call.
+        # Low-confidence suspects use the default prompt (empty string sentinel
+        # → recognize_crop's built-in prompt); circular regions use the arc one.
+        from .vlm.qwen import _PROMPT as _DEFAULT_PROMPT
+        crops: list[tuple[list[list[float]], str]] = []
+        crops.extend((items[i].polygon, _DEFAULT_PROMPT) for i in suspect_idx)
+        crops.extend((r.polygon, _CIRCULAR_PROMPT) for r in circular)
+
+        if not crops:
             return items, 0
 
-        suspect_polys = [items[i].polygon for i in suspect_idx]
         try:
-            recognized = vlm.recognize_crops_batch(img, suspect_polys)
+            recognized = vlm.recognize_crops_with_prompts_batch(img, crops)
         except Exception as exc:  # noqa: BLE001 — best-effort; keep originals
             logger.warning("VLM batch fallback failed, keeping originals: %s", exc)
-            return items, len(suspect_idx)
+            return items, len(crops)
 
-        # Write the recognized text back into the items (geometry unchanged).
+        # --- write results back (geometry unchanged) ---
         out = list(items)
-        for idx, (new_text, new_conf) in zip(suspect_idx, recognized):
+        # Low-confidence suspects: 1:1 text replacement.
+        for idx, (new_text, new_conf) in zip(suspect_idx, recognized[:len(suspect_idx)]):
             if new_text:
                 out[idx] = out[idx].model_copy(
                     update={
@@ -459,7 +504,22 @@ class Pipeline:
                         "source": "vlm_fallback",
                     }
                 )
-        return out, len(suspect_idx)
+        # Circular regions: the VLM read the WHOLE ring as one string. Put it on
+        # the representative member (top-most by bbox y1); leave other members'
+        # text alone so the ring string isn't duplicated across boxes.
+        circle_results = recognized[len(suspect_idx):]
+        for region, (new_text, new_conf) in zip(circular, circle_results):
+            if not new_text or not region.member_indices:
+                continue
+            rep = min(region.member_indices, key=lambda i: items[i].bbox[1])
+            out[rep] = out[rep].model_copy(
+                update={
+                    "text": new_text,
+                    "confidence": max(out[rep].confidence, new_conf),
+                    "source": "vlm_fallback",
+                }
+            )
+        return out, len(crops)
 
 
 def _b64_png(pil_img) -> str:

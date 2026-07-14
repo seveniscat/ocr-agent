@@ -101,6 +101,35 @@ class Settings(BaseSettings):
                     "isn't 95% sure of gets cropped and sent to the VLM for a second "
                     "read (only when vlm_ocr_fallback_enabled + vlm_enabled are on).",
     )
+
+    # ---- Circular / ring-shaped text detection (hard region for line OCR) ----
+    # Characters arranged on an arc (around logos, seals, badges, caps) break the
+    # recognizer's left-to-right reading assumption. detect_circular_regions
+    # finds such rings with pure geometry (HoughCircles + angle-spread check);
+    # the pipeline then crops each ring's bounding box and sends it to the VLM
+    # with a circular-aware prompt. Gain-only: if no circles are found (the
+    # common case), this stage is a no-op and the main OCR path is unchanged.
+    circular_detect_enabled: bool = Field(
+        False,
+        description="Detect circular/ring-shaped text regions and re-read them "
+                    "via the VLM. OFF by default — the HoughCircles-based detector "
+                    "currently over-reports on real packaging (false rings from "
+                    "scattered horizontal text). Enable only for testing until the "
+                    "detection criteria are tightened.",
+    )
+    circular_min_members: int = Field(
+        4, ge=2, le=30,
+        description="Minimum text boxes whose centers must sit on the ring's "
+                    "annulus for it to count as a circular region. Lower → more "
+                    "sensitive (more false rings); higher → only dense rings found.",
+    )
+    circular_band_ratio: float = Field(
+        0.25, ge=0.05, le=0.8,
+        description="Half-width of the ring's annulus as a fraction of the "
+                    "radius. A box center is 'on the ring' when |dist - r| ≤ "
+                    "band_ratio*r. Larger → more tolerant of imprecise circle "
+                    "fits; smaller → tighter to the exact circle.",
+    )
     ocr_version: OcrVersion = Field(
         "PP-OCRv6",
         description="PaddleOCR pipeline version. Default PP-OCRv6 loads "

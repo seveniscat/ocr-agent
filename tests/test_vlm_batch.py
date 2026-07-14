@@ -119,8 +119,16 @@ def test_batch_empty_input_returns_empty():
 
 
 def test_pipeline_vlm_fallback_skipped_by_default():
-    """OCR path is PaddleOCR-only unless both VLM switches are enabled."""
-    pipe = Pipeline(Settings())
+    """OCR path is PaddleOCR-only unless both VLM switches are enabled.
+
+    Explicitly constructs a Settings with BOTH VLM switches off — don't rely on
+    Settings() defaults, which read .env and can flip in a dev env where VLM is
+    turned on (making this assertion wrong).
+    """
+    s = Settings().model_copy(update={
+        "vlm_enabled": False, "vlm_ocr_fallback_enabled": False,
+    })
+    pipe = Pipeline(s)
     items = [
         Item(
             id="t1", type="text", text="?", polygon=[[10, 10], [30, 10], [30, 30], [10, 30]],
@@ -133,7 +141,8 @@ def test_pipeline_vlm_fallback_skipped_by_default():
 
 
 def test_pipeline_vlm_fallback_uses_batch(monkeypatch):
-    """_maybe_vlm_fallback collects suspects and calls recognize_crops_batch once."""
+    """_maybe_vlm_fallback collects suspects and calls the batched-with-prompts
+    method once, passing each crop's prompt through."""
     pipe = Pipeline(Settings())
 
     # Force-enable both VLM switches and a high threshold so items qualify.
@@ -154,12 +163,13 @@ def test_pipeline_vlm_fallback_uses_batch(monkeypatch):
              bbox=[70, 70, 90, 90], confidence=0.2, source="paddleocr"),
     ]
 
-    calls = {"batch": 0}
+    calls = {"batch": 0, "crops": []}
 
     class _FakeVLM:
-        def recognize_crops_batch(self, image, polys):
+        def recognize_crops_with_prompts_batch(self, image, crops):
             calls["batch"] += 1
-            assert len(polys) == 2  # only the two suspects
+            calls["crops"] = crops
+            assert len(crops) == 2  # only the two suspects
             return [("HELLO", 0.8), ("WORLD", 0.8)]
 
     monkeypatch.setattr(pipe, "_get_vlm", lambda: _FakeVLM())
@@ -168,6 +178,9 @@ def test_pipeline_vlm_fallback_uses_batch(monkeypatch):
 
     assert calls["batch"] == 1          # ONE batched call, not 2 serial
     assert n_crops == 2
+    # Each crop carries a (polygon, prompt) pair; prompts are non-empty strings.
+    for poly, prompt in calls["crops"]:
+        assert isinstance(prompt, str) and prompt
     # Suspects got VLM text + source tag; type stays text (not art_text).
     assert out[0].text == "HELLO" and out[0].type == "text"
     assert out[0].source == "vlm_fallback"

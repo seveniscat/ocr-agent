@@ -57,6 +57,67 @@ class VLMProvider(abc.ABC):
             ]
             return [f.result() for f in futures]
 
+    def recognize_crop_with_prompt(
+        self, image: "np.ndarray", polygon: list[list[float]], prompt: str
+    ) -> tuple[str, float]:
+        """Read text in a crop using a CALLER-SUPPLIED prompt.
+
+        Unlike :meth:`recognize_crop` (which uses the provider's built-in
+        art-text prompt), this lets the caller pass a region-specific prompt —
+        e.g. the circular-text prompt that tells the VLM the characters are
+        arranged on an arc. Crops the axis-aligned bbox of ``polygon`` (same
+        crop as ``recognize_crop``), encodes JPEG, and calls ``ask_image``.
+
+        Default implementation works for any provider that implements
+        ``ask_image`` (QwenVLM does). Providers without ``ask_image`` raise
+        NotImplementedError from ``ask_image``, surfaced to the caller.
+        """
+        xs = [p[0] for p in polygon]
+        ys = [p[1] for p in polygon]
+        x1, y1, x2, y2 = int(min(xs)), int(min(ys)), int(max(xs)), int(max(ys))
+        h, w = image.shape[:2]
+        x1, x2 = max(0, x1), min(w, x2)
+        y1, y2 = max(0, y1), min(h, y2)
+        if x2 <= x1 or y2 <= y1:
+            return "", 0.0
+
+        from .qwen import _to_b64_jpeg  # local import avoids a hard PIL dep at import
+
+        data_url = _to_b64_jpeg(image[y1:y2, x1:x2])
+        text, _conf = self.ask_image(
+            data_url, prompt, max_tokens=512, json_mode=False
+        )
+        text = (text or "").strip()
+        if not text or text.upper() == "EMPTY":
+            return "", 0.0
+        # Strip a leading/trailing quote the model sometimes adds.
+        import re
+        text = re.sub(r"^['\"]|['\"]$", "", text)
+        return text, 0.8
+
+    def recognize_crops_with_prompts_batch(
+        self,
+        image: "np.ndarray",
+        crops: list[tuple[list[list[float]], str]],
+    ) -> list[tuple[str, float]]:
+        """Concurrent version of :meth:`recognize_crop_with_prompt`.
+
+        ``crops`` is a list of ``(polygon, prompt)`` pairs. Mirrors
+        :meth:`recognize_crops_batch`: 8-way concurrent dispatch, one result per
+        input, in order. Used by the pipeline to send low-confidence suspects
+        (default prompt) and circular regions (circular prompt) in one batch.
+        """
+        import concurrent.futures as cf
+
+        if not crops:
+            return []
+        with cf.ThreadPoolExecutor(max_workers=8) as pool:
+            futures = [
+                pool.submit(self.recognize_crop_with_prompt, image, poly, prompt)
+                for poly, prompt in crops
+            ]
+            return [f.result() for f in futures]
+
     def ask_image(
         self,
         image_b64_data_url: str,
