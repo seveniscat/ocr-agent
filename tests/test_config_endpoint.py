@@ -181,6 +181,21 @@ def test_save_vlm_config_toggles_thinking(monkeypatch, tmp_path):
     assert get_key(str(env), "OCR_VLM_ENABLE_THINKING") == "true"
 
 
+def test_save_vlm_config_persists_rec_confidence_fallback(monkeypatch, tmp_path):
+    """The fallback threshold is editable from the UI and persisted to .env."""
+    env = _isolated_env(monkeypatch, tmp_path)
+    from app.main import app
+
+    c = TestClient(app)
+    r = c.post("/config/vlm", json={"rec_confidence_fallback": 0.8})
+    assert r.status_code == 200
+    # Echoed back in the response payload (what the UI re-reads after save).
+    assert r.json()["rec_confidence_fallback"] == 0.8
+    # Persisted to .env under the OCR_REC_CONFIDENCE_FALLBACK key.
+    from dotenv import get_key
+    assert get_key(str(env), "OCR_REC_CONFIDENCE_FALLBACK") == "0.8"
+
+
 def test_save_vlm_config_refreshes_running_pipeline(monkeypatch, tmp_path):
     """Regression: a key saved through the UI must reach an already-running
     pipeline. Before the fix, Pipeline.settings was a snapshot taken at startup

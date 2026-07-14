@@ -12,6 +12,10 @@
     --text-color: #4ade80; --art: #fb923c; --qr: #60a5fa; --barcode: #c084fc;
   }
   * { box-sizing: border-box; }
+  /* TEMP: temporarily hide the 拆面 / AI 理解 / 文案校验 features (and their
+     result tabs) from the UI. To restore, delete this rule AND remove the
+     `feature-hidden` class from the affected elements (search this file). */
+  .feature-hidden { display: none !important; }
   body {
     margin: 0; font-family: -apple-system, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
     background: var(--bg); color: var(--text); height: 100vh;
@@ -432,9 +436,9 @@
           <button data-v="vlm">VLM</button>
         </div>
         <button class="btn primary" id="recognizeBtn" disabled>▶ 识别</button>
-        <button class="btn" id="splitPanelsBtn" disabled>⊞ 拆面</button>
-        <button class="btn" id="understandBtn" disabled>✦ AI 理解</button>
-        <button class="btn" id="verifyBtn" disabled>✓ 文案校验</button>
+        <button class="btn feature-hidden" id="splitPanelsBtn" disabled>⊞ 拆面</button>
+        <button class="btn feature-hidden" id="understandBtn" disabled>✦ AI 理解</button>
+        <button class="btn feature-hidden" id="verifyBtn" disabled>✓ 文案校验</button>
         <button class="btn ghost" id="clearBtn" disabled>清除</button>
       </div>
       <div class="status" id="status"></div>
@@ -549,8 +553,8 @@
 
     <div class="tabs">
       <div class="tab active" data-tab="items">识别结果 <span id="count"></span></div>
-      <div class="tab" data-tab="understand">理解</div>
-      <div class="tab" data-tab="verify">校验</div>
+      <div class="tab feature-hidden" data-tab="understand">理解</div>
+      <div class="tab feature-hidden" data-tab="verify">校验</div>
       <div class="tab" data-tab="json">JSON</div>
     </div>
 
@@ -608,6 +612,11 @@
           <input type="checkbox" id="cfg_vlm_ocr_fallback">
           <span class="track"></span>
         </label>
+      </div>
+      <div class="field" style="padding:2px 0 0; margin-left:2px">
+        <label>重认阈值（低于此置信度的文字框送 VLM，0–1）</label>
+        <input type="number" id="cfg_rec_confidence_fallback" min="0" max="1" step="0.01" placeholder="0.95">
+        <div class="hint">默认 0.95；调低→只重认更差的框（省 VLM 调用）；调高→更多框被重认</div>
       </div>
 
       <div class="master-switch" style="margin-top:8px">
@@ -1347,6 +1356,7 @@ function applyVlmConfig(d) {
   _setModelSelect(d.model || 'qwen3.7-plus');
   $('cfg_vlm_enabled').checked = !!d.vlm_enabled;
   $('cfg_vlm_ocr_fallback').checked = !!d.vlm_ocr_fallback_enabled;
+  $('cfg_rec_confidence_fallback').value = d.rec_confidence_fallback ?? '';
   $('cfg_vlm_ocr_enabled').checked = !!d.vlm_ocr_enabled;
   $('cfg_vlm_ocr_model').value = d.vlm_ocr_model || '';
   $('cfg_understand').checked = !!d.understand_enabled;
@@ -1387,6 +1397,12 @@ async function saveVlmConfig() {
     api_key: $('cfg_apikey').value || null,   // empty → backend keeps stored key
     vlm_enabled: $('cfg_vlm_enabled').checked,
     vlm_ocr_fallback_enabled: $('cfg_vlm_ocr_fallback').checked,
+    rec_confidence_fallback: (() => {
+      const v = $('cfg_rec_confidence_fallback').value.trim();
+      if (v === '') return null;          // empty → keep stored value
+      const n = Number(v);
+      return Number.isFinite(n) ? n : null;
+    })(),
     vlm_ocr_enabled: $('cfg_vlm_ocr_enabled').checked,
     vlm_ocr_model: $('cfg_vlm_ocr_model').value.trim() || null,
     understand_enabled: $('cfg_understand').checked,

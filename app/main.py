@@ -198,6 +198,9 @@ class VLMConfigUpdate(BaseModel):
     vlm_ocr_model: str | None = None
     understand_enabled: bool | None = None
     enable_thinking: bool | None = None
+    # Confidence below which a PaddleOCR text box is re-read by the VLM during
+    # /analyze (only when vlm_ocr_fallback_enabled + vlm_enabled). Default 0.95.
+    rec_confidence_fallback: float | None = None
 
 
 def _vlm_config_payload(s: "Settings") -> dict:
@@ -216,6 +219,7 @@ def _vlm_config_payload(s: "Settings") -> dict:
         "vlm_ocr_model": s.vlm_ocr_model,
         "understand_enabled": s.understand_enabled,
         "enable_thinking": s.vlm_enable_thinking,
+        "rec_confidence_fallback": s.rec_confidence_fallback,
     }
 
 
@@ -249,6 +253,10 @@ def save_vlm_config(body: VLMConfigUpdate) -> JSONResponse:
     if body.vlm_ocr_fallback_enabled is not None:
         writes.append(
             ("OCR_VLM_OCR_FALLBACK_ENABLED", str(body.vlm_ocr_fallback_enabled).lower())
+        )
+    if body.rec_confidence_fallback is not None:
+        writes.append(
+            ("OCR_REC_CONFIDENCE_FALLBACK", str(body.rec_confidence_fallback))
         )
     if body.vlm_ocr_enabled is not None:
         writes.append(
