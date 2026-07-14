@@ -120,6 +120,7 @@ class Pipeline:
         annotate: bool = False,
         options: "OCROptions | None" = None,
         image_url: str | None = None,
+        confidence_policy: bool = False,
     ) -> AnalyzeResponse:
         t0 = time.perf_counter()
         img = load_image(image_data)
@@ -236,18 +237,34 @@ class Pipeline:
             merge_x_thres=merge_x,
             merge_y_thres=merge_y,
         )
+
+        # --- confidence policy (POST /analyze only): drop text boxes whose FINAL
+        # confidence is still below rec_confidence_drop after the VLM fallback
+        # pass. VLM re-read happens above, so a box the VLM rescued above the
+        # threshold survives; one that stayed low is discarded. Only text items
+        # are dropped — qr/barcode confidence has different semantics and those
+        # codes are valuable either way. /verify opts out (confidence_policy=False)
+        # because it needs every OCR'd character to match standard copy. ---
+        n_dropped = 0
+        if confidence_policy:
+            n_before_drop = len(all_items)
+            all_items = self._drop_low_confidence(all_items)
+            n_dropped = n_before_drop - len(all_items)
+
         all_items = renumber(all_items, prefix="t")
         t_dedup = time.perf_counter() - t_dedup
 
         # --- per-stage timing log. vlm_calls is the number of CROPS inspected;
         # they're sent in ~⌈crops/batch⌉ batched requests (each ~20 crops in
-        # one multi-image call), so wall-clock no longer scales linearly with it. ---
+        # one multi-image call), so wall-clock no longer scales linearly with it.
+        # n_dropped is only nonzero on the /analyze path (confidence_policy). ---
         t_total = time.perf_counter() - t0
         logger.info(
             "pipeline.run: %dx%d→%dx%d tiles=%d items=%d→%d "
-            "preprocess=%.2fs ocr=%.2fs vlm(crops=%d)=%.2fs dedupe=%.2fs total=%.2fs",
+            "preprocess=%.2fs ocr=%.2fs vlm(crops=%d)=%.2fs dedupe=%.2fs "
+            "drop=%d total=%.2fs",
             orig_w, orig_h, w, h, grid.count, n_after_ocr, len(all_items),
-            t_pre, t_ocr, vlm_calls, t_vlm, t_dedup, t_total,
+            t_pre, t_ocr, vlm_calls, t_vlm, t_dedup, n_dropped, t_total,
         )
 
         response = AnalyzeResponse(
@@ -520,6 +537,36 @@ class Pipeline:
                 }
             )
         return out, len(crops)
+
+    def _drop_low_confidence(self, items: list[Item]) -> list[Item]:
+        """Discard text items whose final confidence is below rec_confidence_drop.
+
+        Called only on the POST /analyze path (``confidence_policy=True``). Runs
+        AFTER the VLM fallback pass, so a box the VLM rescued above the drop
+        threshold survives; one that stayed low (either never sent or VLM-empty)
+        is removed. Only ``type == "text"`` items are dropped — qr/barcode
+        confidence has different semantics and those decoded payloads are
+        valuable regardless of score.
+
+        The drop threshold is clamped to ``rec_confidence_fallback`` so a
+        misconfiguration (drop > fallback) can't silently widen the re-read set.
+        """
+        drop = min(
+            self.settings.rec_confidence_drop,
+            self.settings.rec_confidence_fallback,
+        )
+        kept = [
+            it for it in items
+            if it.type != "text" or it.confidence >= drop
+        ]
+        n_drop = len(items) - len(kept)
+        if n_drop:
+            logger.info(
+                "confidence policy: dropped %d/%d text items "
+                "(confidence < %.2f; kept qr/barcode)",
+                n_drop, len(items), drop,
+            )
+        return kept
 
 
 def _b64_png(pil_img) -> str:

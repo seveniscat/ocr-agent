@@ -187,3 +187,91 @@ def test_pipeline_vlm_fallback_uses_batch(monkeypatch):
     assert out[1].text == "ok"   and out[1].type == "text"      # unchanged
     assert out[2].text == "WORLD" and out[2].type == "text"
     assert out[2].source == "vlm_fallback"
+
+
+# ---------------------------------------------------------------------------
+# Pipeline._drop_low_confidence — /analyze confidence policy (drop < threshold)
+# ---------------------------------------------------------------------------
+
+
+def _text_item(id_, conf, source="paddleocr"):
+    return Item(
+        id=id_, type="text", text=f"t{id_}",
+        polygon=[[0, 0], [10, 0], [10, 10], [0, 10]],
+        bbox=[0, 0, 10, 10], confidence=conf, source=source,
+    )
+
+
+def _code_item(id_, conf, type_="qr"):
+    return Item(
+        id=id_, type=type_, content="payload",
+        polygon=[[0, 0], [10, 0], [10, 10], [0, 10]],
+        bbox=[0, 0, 10, 10], confidence=conf, source="pyzbar",
+    )
+
+
+def test_drop_low_confidence_drops_text_below_threshold():
+    """Text items below rec_confidence_drop are removed."""
+    s = Settings().model_copy(update={
+        "rec_confidence_drop": 0.60,
+        "rec_confidence_fallback": 0.94,
+    })
+    pipe = Pipeline(s)
+    items = [
+        _text_item("t1", 0.55),   # below 0.60 → dropped
+        _text_item("t2", 0.60),   # exactly 0.60 → kept (>=)
+        _text_item("t3", 0.80),   # kept
+    ]
+    kept = pipe._drop_low_confidence(items)
+    kept_ids = {it.id for it in kept}
+    assert kept_ids == {"t2", "t3"}
+
+
+def test_drop_low_confidence_keeps_codes_regardless_of_confidence():
+    """qr/barcode are NEVER dropped even at low confidence (different semantics)."""
+    s = Settings().model_copy(update={
+        "rec_confidence_drop": 0.60,
+        "rec_confidence_fallback": 0.94,
+    })
+    pipe = Pipeline(s)
+    items = [
+        _text_item("t1", 0.50),         # dropped
+        _code_item("q1", 0.20, "qr"),   # kept
+        _code_item("b1", 0.10, "barcode"),  # kept
+    ]
+    kept = pipe._drop_low_confidence(items)
+    kept_ids = {it.id for it in kept}
+    assert kept_ids == {"q1", "b1"}
+
+
+def test_drop_low_confidence_rescued_by_vlm_survives():
+    """An item the VLM lifted above the drop threshold (source=vlm_fallback)
+    must survive — the policy runs AFTER the VLM pass."""
+    s = Settings().model_copy(update={
+        "rec_confidence_drop": 0.60,
+        "rec_confidence_fallback": 0.94,
+    })
+    pipe = Pipeline(s)
+    items = [
+        _text_item("t1", 0.70, source="vlm_fallback"),  # rescued above 0.60
+        _text_item("t2", 0.55, source="vlm_fallback"),  # VLM couldn't lift it
+    ]
+    kept = pipe._drop_low_confidence(items)
+    assert {it.id for it in kept} == {"t1"}
+
+
+def test_drop_low_confidence_clamped_when_drop_above_fallback():
+    """Misconfiguration (drop > fallback) is clamped to the fallback value so
+    the re-read set isn't silently widened."""
+    s = Settings().model_copy(update={
+        "rec_confidence_drop": 0.99,       # misconfigured
+        "rec_confidence_fallback": 0.60,
+    })
+    pipe = Pipeline(s)
+    items = [
+        _text_item("t1", 0.50),
+        _text_item("t2", 0.80),  # would be dropped if drop=0.99 were honored
+    ]
+    kept = pipe._drop_low_confidence(items)
+    assert {it.id for it in kept} == {"t2"}
+

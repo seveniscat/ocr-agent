@@ -199,8 +199,11 @@ class VLMConfigUpdate(BaseModel):
     understand_enabled: bool | None = None
     enable_thinking: bool | None = None
     # Confidence below which a PaddleOCR text box is re-read by the VLM during
-    # /analyze (only when vlm_ocr_fallback_enabled + vlm_enabled). Default 0.95.
+    # /analyze (only when vlm_ocr_fallback_enabled + vlm_enabled). Default 0.94.
     rec_confidence_fallback: float | None = None
+    # Confidence below which a text box is DROPPED from /analyze results (after
+    # the VLM fallback). Default 0.60. Must be ≤ rec_confidence_fallback.
+    rec_confidence_drop: float | None = None
 
 
 def _vlm_config_payload(s: "Settings") -> dict:
@@ -220,6 +223,7 @@ def _vlm_config_payload(s: "Settings") -> dict:
         "understand_enabled": s.understand_enabled,
         "enable_thinking": s.vlm_enable_thinking,
         "rec_confidence_fallback": s.rec_confidence_fallback,
+        "rec_confidence_drop": s.rec_confidence_drop,
     }
 
 
@@ -257,6 +261,10 @@ def save_vlm_config(body: VLMConfigUpdate) -> JSONResponse:
     if body.rec_confidence_fallback is not None:
         writes.append(
             ("OCR_REC_CONFIDENCE_FALLBACK", str(body.rec_confidence_fallback))
+        )
+    if body.rec_confidence_drop is not None:
+        writes.append(
+            ("OCR_REC_CONFIDENCE_DROP", str(body.rec_confidence_drop))
         )
     if body.vlm_ocr_enabled is not None:
         writes.append(
@@ -352,7 +360,8 @@ async def analyze(
             resp = await loop.run_in_executor(
                 _ocr_executor,
                 lambda: pipeline.run(
-                    data, annotate=annotate, options=opt_obj, image_url=url
+                    data, annotate=annotate, options=opt_obj, image_url=url,
+                    confidence_policy=True,
                 ),
             )
         except RuntimeError as exc:

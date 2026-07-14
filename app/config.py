@@ -95,11 +95,22 @@ class Settings(BaseSettings):
                     "the boxes are still kept (recognized=False) but with no crop_b64.",
     )
     rec_confidence_fallback: float = Field(
-        0.95, ge=0.0, le=1.0,
+        0.94, ge=0.0, le=1.0,
         description="[vlm_ocr_fallback] Recognition confidence below which a crop "
-                    "is re-read by the VLM. Default 0.95 — any text box PaddleOCR "
-                    "isn't 95% sure of gets cropped and sent to the VLM for a second "
-                    "read (only when vlm_ocr_fallback_enabled + vlm_enabled are on).",
+                    "is re-read by the VLM. Default 0.94 — any text box PaddleOCR "
+                    "isn't 94% sure of gets cropped and sent to the VLM for a second "
+                    "read (only when vlm_ocr_fallback_enabled + vlm_enabled are on). "
+                    "Pairs with rec_confidence_drop: boxes in [drop, fallback) are "
+                    "VLM re-read, boxes below drop are discarded (POST /analyze only).",
+    )
+    rec_confidence_drop: float = Field(
+        0.60, ge=0.0, le=1.0,
+        description="[/analyze] Text boxes whose FINAL confidence is below this are "
+                    "discarded from /analyze results (after the VLM fallback pass). "
+                    "Default 0.60 — a box PaddleOCR scored <60% that the VLM couldn't "
+                    "lift above 60% is dropped. Only text items are dropped; qr/barcode "
+                    "are kept. Applied on POST /analyze only (/verify keeps all boxes). "
+                    "Must be ≤ rec_confidence_fallback.",
     )
 
     # ---- Circular / ring-shaped text detection (hard region for line OCR) ----

@@ -615,8 +615,13 @@
       </div>
       <div class="field" style="padding:2px 0 0; margin-left:2px">
         <label>重认阈值（低于此置信度的文字框送 VLM，0–1）</label>
-        <input type="number" id="cfg_rec_confidence_fallback" min="0" max="1" step="0.01" placeholder="0.95">
-        <div class="hint">默认 0.95；调低→只重认更差的框（省 VLM 调用）；调高→更多框被重认</div>
+        <input type="number" id="cfg_rec_confidence_fallback" min="0" max="1" step="0.01" placeholder="0.94">
+        <div class="hint">默认 0.94；调低→只重认更差的框（省 VLM 调用）；调高→更多框被重认。应 ≥ 丢弃阈值</div>
+      </div>
+      <div class="field" style="padding:2px 0 0; margin-left:2px">
+        <label>丢弃阈值（仅 /analyze：最终置信度低于此值的文字框直接丢弃，0–1）</label>
+        <input type="number" id="cfg_rec_confidence_drop" min="0" max="1" step="0.01" placeholder="0.60">
+        <div class="hint">默认 0.60；与重认阈值配合：[丢弃, 重认) 区间走 VLM 重认，&lt;丢弃 则从结果移除（仅文本框，二维码/条码不受影响）</div>
       </div>
 
       <div class="master-switch" style="margin-top:8px">
@@ -1357,6 +1362,7 @@ function applyVlmConfig(d) {
   $('cfg_vlm_enabled').checked = !!d.vlm_enabled;
   $('cfg_vlm_ocr_fallback').checked = !!d.vlm_ocr_fallback_enabled;
   $('cfg_rec_confidence_fallback').value = d.rec_confidence_fallback ?? '';
+  $('cfg_rec_confidence_drop').value = d.rec_confidence_drop ?? '';
   $('cfg_vlm_ocr_enabled').checked = !!d.vlm_ocr_enabled;
   $('cfg_vlm_ocr_model').value = d.vlm_ocr_model || '';
   $('cfg_understand').checked = !!d.understand_enabled;
@@ -1399,6 +1405,12 @@ async function saveVlmConfig() {
     vlm_ocr_fallback_enabled: $('cfg_vlm_ocr_fallback').checked,
     rec_confidence_fallback: (() => {
       const v = $('cfg_rec_confidence_fallback').value.trim();
+      if (v === '') return null;          // empty → keep stored value
+      const n = Number(v);
+      return Number.isFinite(n) ? n : null;
+    })(),
+    rec_confidence_drop: (() => {
+      const v = $('cfg_rec_confidence_drop').value.trim();
       if (v === '') return null;          // empty → keep stored value
       const n = Number(v);
       return Number.isFinite(n) ? n : null;
