@@ -47,6 +47,8 @@ uvicorn app.main:app --reload --port 8000
 #   → 或用封装好的 make 命令(见下文"运维命令"):`make up`
 ```
 
+> 📌 **Windows 生产部署**：通过 NSSM 注册为系统服务（开机自启、崩溃重启），完整运维命令见 [`docs/OPERATIONS.md`](docs/OPERATIONS.md)。根目录 `Makefile` 仅适用于 macOS/Linux。
+
 ### Use it
 
 ```bash
