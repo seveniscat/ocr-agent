@@ -309,7 +309,92 @@ powershell -ExecutionPolicy Bypass -File D:\bzdev\ocr-agent\scripts\install_serv
 
 ---
 
-## 9. 常用命令速查卡
+## 9. 主机加固（当 Windows 作为正式服务器）
+
+本节针对"这台 Windows 长期作为生产服务器"的场景。第一次部署时做一次即可。
+
+> ⚠️ 所有命令都需要**管理员权限**（cmd/PowerShell 右键"以管理员身份运行"）。
+>
+> ⚠️ Windows 11 桌面版当生产服务器**不是微软推荐的方案**（EULA 限制、强制更新、组件缺失）。理想情况是换 Windows Server 或 Linux。下面的加固只是"把桌面版能想到的坑手动填上"，不能完全等同服务器版。
+
+### 9.1 防止机器睡眠 / 休眠（P0，必做）
+
+桌面版默认会睡眠，睡下去服务就断了。
+
+```cmd
+:: 管理员 cmd
+powercfg /change standby-timeout-ac 0
+powercfg /change standby-timeout-dc 0
+powercfg /change hibernate-timeout-ac 0
+powercfg /change hibernate-timeout-dc 0
+powercfg /change monitor-timeout-ac 0
+powercfg /change monitor-timeout-dc 0
+powercfg /change disk-timeout-ac 0
+powercfg /change disk-timeout-dc 0
+powercfg /hibernate off
+```
+
+> 若机器加了域（域控推了电源 GPO），`/change` 可能报"多个组策略覆盖设置"。此时仍要看实际值是否为 0：
+> ```cmd
+> powercfg /query SCHEME_CURRENT SUB_SLEEP STANDBYIDLE
+> :: 看输出里"当前交流电源设置索引: 0x00000000" 就是永不睡眠
+> ```
+
+### 9.2 防止 Windows Update 强制重启（P0，必做）
+
+Win11 会在后台自动装更新并重启，重启时机不可控，会把服务干断。
+
+```cmd
+:: 管理员 cmd
+:: 1. AUOptions=3：自动下载，但安装前通知（不自动装）
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU" /v AUOptions /t REG_DWORD /d 3 /f
+
+:: 2. 有用户登录时不自动重启
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU" /v NoAutoRebootWithLoggedOnUsers /t REG_DWORD /d 1 /f
+```
+
+更新策略建议：每月挑一个维护窗口，手动 `net stop ocr-agent` → 装更新 → 重启 → 服务自动起来（NSSM 已设开机自启）。
+
+### 9.3 备份（P0，按需）
+
+至少备份两样：`.env`（含 API key）+ 代码目录 `D:\bzdev\ocr-agent\app\`。
+
+最简单的方案：用任务计划程序每天压缩到另一块盘或网络共享。也可手动不定期 `xcopy` 到外部存储。
+
+> `.env` 含敏感凭据，**不要备份到公网云盘**，除非确认安全。
+
+### 9.4 远程管理（P1，建议）
+
+桌面版默认不带 SSH Server。两个选择：
+
+- **远程桌面（RDP）**：Win11 自带，最简单。系统属性 → 远程 → 允许远程连接。适合偶尔登录操作。
+- **OpenSSH Server**：命令行远程，适合脚本化运维。
+  ```powershell
+  Add-WindowsCapability -Online -Name 'OpenSSH.Server~~~~0.0.1.0'
+  Start-Service sshd
+  Set-Service -Name sshd -StartupType Automatic
+  New-NetFirewallRule -Name OpenSSH-Server-In-TCP -DisplayName 'OpenSSH Server (sshd) Inbound' `
+      -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22
+  ```
+
+### 9.5 监控 / 告警（P1，建议）
+
+桌面版没有内置的"服务挂了通知你"机制。最简方案：任务计划程序每 5 分钟 `curl /healthz`，失败时记日志或推钉钉/企微。
+
+### 9.6 关于"重启自启"的说明
+
+NSSM 服务已设 `SERVICE_AUTO_START`，机器开机/重启后服务**会自动启动**（不依赖任何用户登录）。这是把 Win11 当服务器的最后一道保险——只要机器通电开机，服务就回来。
+
+**验证方法**：等下次机器重启后跑一次：
+```cmd
+sc query ocr-agent | findstr STATE
+curl http://127.0.0.1:48763/healthz
+```
+两者都正常即自启配置生效。
+
+---
+
+## 10. 常用命令速查卡
 
 | 任务 | 命令 |
 |---|---|
