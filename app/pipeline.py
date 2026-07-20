@@ -121,7 +121,12 @@ class Pipeline:
         options: "OCROptions | None" = None,
         image_url: str | None = None,
         confidence_policy: bool = False,
+        stats_sink: dict | None = None,
     ) -> AnalyzeResponse:
+        # ``stats_sink`` (when provided by the caller) collects the same numbers
+        # already emitted via logger.info, so the /logs Web UI can render a
+        # structured history without parsing stderr. Caller owns the dict; we
+        # only write to it. See app/log_buffer.py for the consumer.
         t0 = time.perf_counter()
         img = load_image(image_data)
         h, w = img.shape[:2]
@@ -228,7 +233,7 @@ class Pipeline:
 
         # --- optional VLM fallback (opt-in; PaddleOCR is the default OCR path) ---
         t_vlm, vlm_calls = time.perf_counter(), 0
-        all_items, vlm_calls = self._maybe_vlm_fallback(img, all_items)
+        all_items, vlm_calls, vlm_stats = self._maybe_vlm_fallback(img, all_items)
         t_vlm = time.perf_counter() - t_vlm
 
         # --- final dedupe (paragraph blocks can still overlap at tile seams) ---
@@ -246,10 +251,17 @@ class Pipeline:
         # codes are valuable either way. /verify opts out (confidence_policy=False)
         # because it needs every OCR'd character to match standard copy. ---
         n_dropped = 0
+        drop_threshold_used = 0.0
         if confidence_policy:
             n_before_drop = len(all_items)
             all_items = self._drop_low_confidence(all_items)
             n_dropped = n_before_drop - len(all_items)
+            # Mirror the clamp in _drop_low_confidence so the UI shows the
+            # actually-applied threshold (not the raw setting).
+            drop_threshold_used = min(
+                self.settings.rec_confidence_drop,
+                self.settings.rec_confidence_fallback,
+            )
 
         all_items = renumber(all_items, prefix="t")
         t_dedup = time.perf_counter() - t_dedup
@@ -284,6 +296,33 @@ class Pipeline:
             response.annotated_image_b64 = _b64_png(annotated)
             t_annot = time.perf_counter() - t_annot
             logger.info("pipeline.run: annotate=%.2fs", t_annot)
+
+        # Publish the structured run stats for the /logs Web UI. Keys mirror
+        # LogRecord fields in app/log_buffer.py. vlm_stats is {} when fallback
+        # didn't run (VLM disabled / nothing suspect), so the .get() defaults
+        # carry through cleanly.
+        if stats_sink is not None:
+            stats_sink.update({
+                "tiles": grid.count,
+                "items_before": n_after_ocr,
+                "items_after": len(all_items),
+                "t_preprocess": t_pre,
+                "t_ocr": t_ocr,
+                "t_vlm": t_vlm,
+                "t_dedupe": t_dedup,
+                "t_annotate": t_annot,
+                "t_total": t_total,
+                "vlm_crops": vlm_calls,
+                "vlm_sent": vlm_stats.get("sent", 0),
+                "vlm_rescued": vlm_stats.get("rescued", 0),
+                "vlm_empty": vlm_stats.get("empty", 0),
+                "vlm_suspects": vlm_stats.get("suspects", 0),
+                "vlm_rings": vlm_stats.get("rings", 0),
+                "fallback_threshold": vlm_stats.get("threshold", 0.0),
+                "fallback_crops": vlm_stats.get("crops", []),
+                "dropped": n_dropped,
+                "drop_threshold": drop_threshold_used,
+            })
 
         return response
 
@@ -433,7 +472,7 @@ class Pipeline:
 
     def _maybe_vlm_fallback(
         self, img, items: list[Item]
-    ) -> tuple[list[Item], int]:
+    ) -> tuple[list[Item], int, dict]:
         """Re-recognize hard text regions via the VLM: low-confidence crops AND
         circular/ring-shaped regions.
 
@@ -456,18 +495,21 @@ class Pipeline:
         representative member (the top-most); other members keep their original
         text to avoid duplicating the ring string across several boxes.
 
-        Returns ``(items, n_crops)``: ``n_crops`` is the total number of crops
-        sent (suspects + rings), so the timing log reflects how many regions
-        were inspected. On any VLM/circle failure the originals are kept
-        (best-effort — this stage must never break the main OCR path).
+        Returns ``(items, n_crops, stats)``: ``n_crops`` is the total number of
+        crops sent (suspects + rings), so the timing log reflects how many
+        regions were inspected. ``stats`` carries the breakdown
+        (sent/rescued/empty/suspects/rings/threshold) for the /logs UI; it's an
+        empty dict when fallback didn't run. On any VLM/circle failure the
+        originals are kept (best-effort — this stage must never break the main
+        OCR path).
         """
         if not self.settings.vlm_enabled or not self.settings.vlm_ocr_fallback_enabled:
-            return items, 0
+            return items, 0, {}
         try:
             vlm = self._get_vlm()
         except Exception as exc:  # noqa: BLE001 — VLM is best-effort
             logger.warning("VLM unavailable, skipping fallback: %s", exc)
-            return items, 0
+            return items, 0, {}
 
         threshold = self.settings.rec_confidence_fallback
 
@@ -501,7 +543,7 @@ class Pipeline:
         crops.extend((r.polygon, _CIRCULAR_PROMPT) for r in circular)
 
         if not crops:
-            return items, 0
+            return items, 0, {}
 
         try:
             recognized = vlm.recognize_crops_with_prompts_batch(img, crops)
@@ -510,47 +552,91 @@ class Pipeline:
                 "vlm fallback FAILED: sent=%d all kept (originals), error: %s",
                 len(crops), exc,
             )
-            return items, len(crops)
+            return items, len(crops), {
+                "sent": len(crops), "rescued": 0, "empty": 0,
+                "suspects": len(suspect_idx), "rings": len(circular),
+                "threshold": threshold,
+            }
 
         # --- write results back (geometry unchanged) ---
         out = list(items)
         n_rescued = n_empty = 0
+        # Per-crop breakdown for the /logs UI detail view. Bounded in length
+        # below; the aggregate counts stay complete regardless.
+        crop_details: list[dict] = []
         # Low-confidence suspects: 1:1 text replacement.
         for idx, (new_text, new_conf) in zip(suspect_idx, recognized[:len(suspect_idx)]):
+            it = out[idx]
             if new_text:
                 n_rescued += 1
-                out[idx] = out[idx].model_copy(
+                out[idx] = it.model_copy(
                     update={
                         "text": new_text,
-                        "confidence": max(out[idx].confidence, new_conf),
+                        "confidence": max(it.confidence, new_conf),
                         "source": "vlm_fallback",
                     }
                 )
+                outcome = "rescued"
             else:
                 n_empty += 1
+                outcome = "empty"
+            crop_details.append({
+                "kind": "suspect",
+                "box": [int(round(c)) for c in it.bbox],
+                "orig_text": it.text,
+                "orig_conf": round(float(it.confidence), 3),
+                "vlm_text": new_text,
+                "vlm_conf": round(float(new_conf), 3),
+                "outcome": outcome,
+            })
         # Circular regions: the VLM read the WHOLE ring as one string. Put it on
         # the representative member (top-most by bbox y1); leave other members'
         # text alone so the ring string isn't duplicated across boxes.
         circle_results = recognized[len(suspect_idx):]
         for region, (new_text, new_conf) in zip(circular, circle_results):
+            # Region bbox = union of member bboxes (for the UI to highlight).
+            mb = [items[i].bbox for i in region.member_indices]
+            rbox = [min(b[0] for b in mb), min(b[1] for b in mb),
+                    max(b[2] for b in mb), max(b[3] for b in mb)] if mb else [0, 0, 0, 0]
             if not new_text or not region.member_indices:
-                continue
-            n_rescued += 1
-            rep = min(region.member_indices, key=lambda i: items[i].bbox[1])
-            out[rep] = out[rep].model_copy(
-                update={
-                    "text": new_text,
-                    "confidence": max(out[rep].confidence, new_conf),
-                    "source": "vlm_fallback",
-                }
-            )
+                outcome = "empty"
+            else:
+                n_rescued += 1
+                outcome = "rescued"
+                rep = min(region.member_indices, key=lambda i: items[i].bbox[1])
+                out[rep] = out[rep].model_copy(
+                    update={
+                        "text": new_text,
+                        "confidence": max(out[rep].confidence, new_conf),
+                        "source": "vlm_fallback",
+                    }
+                )
+            crop_details.append({
+                "kind": "ring",
+                "box": [int(round(c)) for c in rbox],
+                "orig_text": "(arc)",
+                "orig_conf": None,
+                "vlm_text": new_text,
+                "vlm_conf": round(float(new_conf), 3),
+                "outcome": outcome,
+                "members": len(region.member_indices),
+            })
         logger.info(
             "vlm fallback: sent=%d rescued=%d empty=%d "
             "(suspects=%d rings=%d threshold=%.2f)",
             len(crops), n_rescued, n_empty,
             len(suspect_idx), len(circular), threshold,
         )
-        return out, len(crops)
+        from .log_buffer import CAPACITY_CROPS
+        return out, len(crops), {
+            "sent": len(crops),
+            "rescued": n_rescued,
+            "empty": n_empty,
+            "suspects": len(suspect_idx),
+            "rings": len(circular),
+            "threshold": threshold,
+            "crops": crop_details[:CAPACITY_CROPS],
+        }
 
     def _drop_low_confidence(self, items: list[Item]) -> list[Item]:
         """Discard text items whose final confidence is below rec_confidence_drop.

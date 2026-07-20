@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ocr-agent · 调用日志</title>
+<style>
+  :root {
+    /* Same palette as index.html so the two pages feel like one app. */
+    --bg: #0f1115; --panel: #181b22; --panel-2: #20242e;
+    --border: #2c313c; --text: #e6e9ef; --muted: #8b93a7;
+    --accent: #4f8cff; --accent-2: #22c55e; --warn: #f59e0b; --err: #ef4444;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: -apple-system, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+    background: var(--bg); color: var(--text); min-height: 100vh;
+  }
+  header {
+    padding: 12px 20px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 14px; background: var(--panel);
+    position: sticky; top: 0; z-index: 10;
+  }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; }
+  header .sub { color: var(--muted); font-size: 12px; }
+  header .spacer { flex: 1; }
+  header a { color: var(--accent); font-size: 12px; text-decoration: none; }
+  header code { color: var(--muted); font-size: 11px; }
+  header .badge {
+    background: var(--panel-2); border: 1px solid var(--border);
+    color: var(--muted); padding: 2px 8px; border-radius: 10px; font-size: 11px;
+  }
+
+  .toolbar {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    padding: 10px 20px; background: var(--panel); border-bottom: 1px solid var(--border);
+  }
+  .toolbar label { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+  .toolbar select, .toolbar input[type="checkbox"] { accent-color: var(--accent); }
+  .toolbar select {
+    background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 4px; padding: 4px 8px; font-size: 12px;
+  }
+  .toolbar button {
+    background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 4px; padding: 5px 12px; font-size: 12px; cursor: pointer;
+  }
+  .toolbar button:hover { border-color: var(--accent); }
+  .toolbar button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .toolbar .sep { width: 1px; height: 18px; background: var(--border); }
+  .toolbar .meta { color: var(--muted); font-size: 11px; margin-left: auto; }
+
+  .table-wrap { padding: 12px 20px 40px; overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  thead th {
+    text-align: left; padding: 8px 10px; color: var(--muted); font-weight: 500;
+    border-bottom: 1px solid var(--border); white-space: nowrap; position: sticky; top: 0;
+    background: var(--bg);
+  }
+  tbody td { padding: 7px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  tbody tr:hover { background: var(--panel); }
+  tbody tr.error td { color: var(--err); }
+  tbody tr.expanded { background: var(--panel); }
+  .num { font-variant-numeric: tabular-nums; font-family: "SF Mono", Menlo, Consolas, monospace; }
+  .time { color: var(--muted); }
+  .engine-tag {
+    display: inline-block; padding: 1px 7px; border-radius: 3px; font-size: 11px;
+    border: 1px solid var(--border);
+  }
+  .engine-tag.paddleocr { color: var(--accent-2); border-color: var(--accent-2); }
+  .engine-tag.vlm { color: var(--accent); border-color: var(--accent); }
+  .t-warn { color: var(--warn); }
+  .t-err { color: var(--err); }
+  .delta { color: var(--muted); font-size: 11px; }
+  .status-ok { color: var(--accent-2); }
+  .status-err { color: var(--err); }
+
+  /* expanded detail row */
+  tr.detail td { padding: 0; background: var(--panel-2); }
+  .detail-body {
+    padding: 12px 20px; display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: 8px 24px; font-size: 12px;
+  }
+  .detail-body .kv { display: flex; justify-content: space-between; gap: 12px; }
+  .detail-body .k { color: var(--muted); }
+  .detail-body .v { color: var(--text); font-family: "SF Mono", Menlo, Consolas, monospace; }
+  .detail-body .full { grid-column: 1 / -1; }
+  .detail-body .full .v { word-break: break-all; white-space: normal; }
+
+  .empty {
+    text-align: center; color: var(--muted); padding: 60px 20px; font-size: 13px;
+  }
+  .loading { opacity: 0.5; pointer-events: none; }
+
+  /* ---- VLM fallback per-crop sub-table (inside expanded detail row) ---- */
+  .crops-section {
+    margin-top: 14px; border-top: 1px solid var(--border); padding-top: 12px;
+  }
+  .crops-title {
+    font-size: 12px; color: var(--muted); margin-bottom: 8px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.5px;
+  }
+  .crops-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .crops-table thead th {
+    text-align: left; padding: 6px 8px; color: var(--muted); font-weight: 500;
+    border-bottom: 1px solid var(--border); white-space: nowrap; font-size: 11px;
+  }
+  .crops-table tbody td {
+    padding: 5px 8px; border-bottom: 1px solid var(--border);
+    vertical-align: middle;
+  }
+  .crops-table tbody tr:hover { background: var(--panel); }
+  .crop-box { color: var(--muted); font-size: 11px; }
+  .crop-text { color: var(--text); }
+  .crop-empty { color: var(--muted); font-style: italic; font-size: 11px; }
+  .crop-na { color: var(--muted); }
+  .crop-conf {
+    margin-left: 5px; font-size: 10px; padding: 1px 5px; border-radius: 8px;
+    background: var(--bg); border: 1px solid var(--border); color: var(--muted);
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+  }
+  .crop-conf.low { color: var(--warn); border-color: var(--warn); }
+  .crop-arrow-cell { text-align: center; width: 30px; }
+  .crop-arrow { color: var(--muted); }
+  .crop-arrow[title="文字改变"] { color: var(--accent); }
+  .crop-kind {
+    display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 10px;
+    border: 1px solid var(--border);
+  }
+  .crop-kind.kind-suspect { color: var(--warn); border-color: var(--warn); }
+  .crop-kind.kind-ring { color: var(--accent); border-color: var(--accent); }
+  .out-rescued { color: var(--accent-2); }
+  .out-empty { color: var(--muted); }
+  .crops-count, .crops-truncated {
+    margin-top: 6px; font-size: 11px; color: var(--muted);
+  }
+  .crops-truncated { color: var(--warn); }
+</style>
+</head>
+<body>
+<header>
+  <h1>ocr-agent</h1>
+  <span class="sub">调用日志 · OCR 耗时 / VLM 兜底 / 置信度丢弃</span>
+  <span class="spacer"></span>
+  <span class="badge" id="countBadge">0 条</span>
+  <code id="updated"></code>
+  <a href="/" target="_blank">← 返回识别</a>
+  <a href="/docs" target="_blank">API docs ↗</a>
+</header>
+
+<div class="toolbar">
+  <label>引擎
+    <select id="fEngine">
+      <option value="">全部</option>
+      <option value="paddleocr">PaddleOCR</option>
+      <option value="vlm">VLM</option>
+    </select>
+  </label>
+  <label>状态
+    <select id="fStatus">
+      <option value="">全部</option>
+      <option value="ok">成功</option>
+      <option value="error">失败</option>
+    </select>
+  </label>
+  <label><input type="checkbox" id="fFallback"> 仅 VLM 兜底</label>
+  <label><input type="checkbox" id="fSlow"> 仅慢调用 (&gt;3s)</label>
+  <span class="sep"></span>
+  <label><input type="checkbox" id="autoRefresh" checked> 自动刷新</label>
+  <select id="refreshInterval">
+    <option value="3000">3s</option>
+    <option value="5000" selected>5s</option>
+    <option value="10000">10s</option>
+    <option value="30000">30s</option>
+  </select>
+  <button id="refreshBtn" class="primary">↻ 刷新</button>
+  <span class="meta" id="filterMeta"></span>
+</div>
+
+<div class="table-wrap" id="tableWrap">
+  <div class="empty" id="emptyHint">暂无调用记录 · 跑一次 <code>/analyze</code> 后自动出现</div>
+  <table id="table" style="display:none">
+    <thead>
+      <tr>
+        <th>时间</th>
+        <th>引擎</th>
+        <th>来源</th>
+        <th>尺寸</th>
+        <th>tiles</th>
+        <th>items</th>
+        <th>总耗时</th>
+        <th>OCR</th>
+        <th>VLM</th>
+        <th>兜底 (sent/rescued)</th>
+        <th>drop</th>
+        <th>状态</th>
+      </tr>
+    </thead>
+    <tbody id="tbody"></tbody>
+  </table>
+</div>
+
+<script>
+"use strict";
+
+const API = "/logs/api?limit=500";
+let allRecords = [];
+let refreshTimer = null;
+let expandedTs = null;   // which row is expanded (keyed by ts+task_id)
+
+const $ = (id) => document.getElementById(id);
+
+function fmtTime(ts) {
+  const d = new Date(ts * 1000);
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+function fmtSec(s) {
+  if (s == null) return "—";
+  if (s < 0.005) return "0";
+  return s.toFixed(s < 1 ? 2 : 1);
+}
+
+function timeClass(s) {
+  if (s == null) return "";
+  if (s >= 5) return "t-err";
+  if (s >= 3) return "t-warn";
+  return "";
+}
+
+function escapeHtml(s) {
+  if (s == null) return "";
+  return String(s).replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+  }[c]));
+}
+
+function truncateSrc(src) {
+  // "url=https://very-long..." → keep scheme + last 40 chars
+  if (!src) return "—";
+  if (src.length <= 60) return escapeHtml(src);
+  const m = src.match(/^([^=]+)=/);
+  const prefix = m ? m[1] + "=" : "";
+  const val = src.slice(prefix.length);
+  return escapeHtml(prefix + (val.length > 50 ? "…" + val.slice(-50) : val));
+}
+
+function applyFilters(records) {
+  const engine = $("fEngine").value;
+  const status = $("fStatus").value;
+  const fallbackOnly = $("fFallback").checked;
+  const slowOnly = $("fSlow").checked;
+  return records.filter((r) => {
+    if (engine && r.engine !== engine) return false;
+    if (status && r.status !== status) return false;
+    if (fallbackOnly && !(r.vlm_sent > 0)) return false;
+    if (slowOnly && !(r.t_total >= 3)) return false;
+    return true;
+  });
+}
+
+function renderDetail(r) {
+  const rows = [
+    ["preprocess", fmtSec(r.t_preprocess) + "s"],
+    ["OCR", fmtSec(r.t_ocr) + "s"],
+    ["VLM 兜底", fmtSec(r.t_vlm) + "s"],
+    ["dedupe", fmtSec(r.t_dedupe) + "s"],
+    ["annotate", fmtSec(r.t_annotate) + "s"],
+    ["tiles", r.tiles],
+    ["items (OCR→最终)", `${r.items_before} → ${r.items_after}`],
+    ["VLM crops (sent)", r.vlm_crops],
+    ["VLM rescued", r.vlm_rescued],
+    ["VLM empty", r.vlm_empty],
+    ["低置信 suspects", r.vlm_suspects],
+    ["圆弧 rings", r.vlm_rings],
+    ["兜底阈值", r.fallback_threshold ? r.fallback_threshold.toFixed(2) : "—"],
+    ["drop 阈值", r.drop_threshold ? r.drop_threshold.toFixed(2) : "—"],
+    ["task_id", r.task_id || "(同步)"],
+    ["engine", r.engine],
+    ["尺寸", `${r.width}×${r.height}`],
+  ];
+  if (r.error) rows.push(["error", r.error]);
+  let html = `<div class="detail-body">${rows.map(([k, v]) =>
+    `<div class="kv"><span class="k">${k}</span><span class="v">${escapeHtml(v)}</span></div>`
+  ).join("")}<div class="kv full"><span class="k">source</span><span class="v">${escapeHtml(r.src || "")}</span></div></div>`;
+
+  // Per-crop fallback breakdown — only when any crop was sent to the VLM.
+  const crops = r.fallback_crops || [];
+  if (crops.length > 0) {
+    html += renderFallbackCrops(crops, r.vlm_sent, r.fallback_crops ? r.fallback_crops.length : 0);
+  }
+  return html;
+}
+
+// Sub-table: one row per crop the VLM looked at.
+// Columns: # | 类型 | bbox | OCR原文(conf) | → | VLM识别(conf) | 结果
+function renderFallbackCrops(crops, totalSent, shownCount) {
+  const rowsHtml = crops.map((c, i) => {
+    const isRing = c.kind === "ring";
+    const kindLabel = isRing ? `圆弧 (${c.members || 0}元)` : "低置信";
+    const kindCls = isRing ? "kind-ring" : "kind-suspect";
+    const box = c.box ? `[${c.box[0]},${c.box[1]},${c.box[2]},${c.box[3]}]` : "—";
+    // Ring regions have no single "original text" (the arc spans many boxes),
+    // so show — instead of a misleading "(arc)" string.
+    const orig = isRing
+      ? `<span class="crop-na">—</span>`
+      : (c.orig_text !== null && c.orig_text !== undefined && c.orig_text !== ""
+          ? `<span class="crop-text">${escapeHtml(c.orig_text)}</span>`
+          : `<span class="crop-empty">(空)</span>`);
+    const origConf = (!isRing && c.orig_conf != null) ? `<span class="crop-conf low">${c.orig_conf.toFixed(2)}</span>` : "";
+    const vlmText = c.vlm_text
+      ? `<span class="crop-text">${escapeHtml(c.vlm_text)}</span>`
+      : `<span class="crop-empty">(空)</span>`;
+    const vlmConf = c.vlm_conf != null && c.vlm_conf > 0 ? `<span class="crop-conf">${c.vlm_conf.toFixed(2)}</span>` : "";
+    const outcomeCls = c.outcome === "rescued" ? "out-rescued" : "out-empty";
+    const outcomeLabel = c.outcome === "rescued" ? "✓ 救回" : "✗ 空";
+    // "Changed" only makes sense for suspects (where there WAS an original text
+    // that differs). Rings always show a plain arrow.
+    const changed = !isRing && c.vlm_text && c.orig_text !== c.vlm_text;
+    const arrow = changed ? `<span class="crop-arrow" title="文字改变">→✎</span>` : `<span class="crop-arrow">→</span>`;
+    return `<tr>
+      <td class="num">${i + 1}</td>
+      <td><span class="crop-kind ${kindCls}">${kindLabel}</span></td>
+      <td class="num crop-box">${box}</td>
+      <td>${orig}${origConf}</td>
+      <td class="crop-arrow-cell">${arrow}</td>
+      <td>${vlmText}${vlmConf}</td>
+      <td class="${outcomeCls}">${outcomeLabel}</td>
+    </tr>`;
+  }).join("");
+  const truncationNote = shownCount < totalSent
+    ? `<div class="crops-truncated">仅显示前 ${shownCount} 条（共 ${totalSent} 条 crop）</div>`
+    : `<div class="crops-count">共 ${totalSent} 条 crop · 救回 ${crops.filter(c => c.outcome === "rescued").length} · 空 ${crops.filter(c => c.outcome === "empty").length}</div>`;
+  return `<div class="crops-section">
+    <div class="crops-title">VLM 兜底明细</div>
+    <table class="crops-table">
+      <thead><tr>
+        <th>#</th><th>类型</th><th>bbox</th>
+        <th>OCR 原文 (conf)</th><th></th>
+        <th>VLM 识别 (conf)</th><th>结果</th>
+      </tr></thead>
+      <tbody>${rowsHtml}</tbody>
+    </table>
+    ${truncationNote}
+  </div>`;
+}
+
+function render() {
+  const filtered = applyFilters(allRecords);
+  // newest first
+  filtered.sort((a, b) => b.ts - a.ts);
+
+  $("countBadge").textContent = `${allRecords.length} 条`;
+  $("filterMeta").textContent = filtered.length === allRecords.length
+    ? "" : `筛选后 ${filtered.length} 条`;
+
+  const tbody = $("tbody");
+  if (filtered.length === 0) {
+    $("table").style.display = "none";
+    $("emptyHint").style.display = "block";
+    $("emptyHint").textContent = allRecords.length === 0
+      ? "暂无调用记录 · 跑一次 /analyze 后自动出现"
+      : "当前筛选条件下无记录";
+    return;
+  }
+  $("table").style.display = "";
+  $("emptyHint").style.display = "none";
+
+  const rows = filtered.map((r) => {
+    const key = r.ts + "|" + (r.task_id || "");
+    const isExpanded = expandedTs === key;
+    const cls = r.status === "error" ? "error" : "";
+    const expandedCls = isExpanded ? "expanded" : "";
+    const engineCls = r.engine === "vlm" ? "vlm" : "paddleocr";
+    const fallbackCell = r.vlm_sent > 0
+      ? `<span class="num">${r.vlm_sent}</span><span class="delta">/${r.vlm_rescued}</span>`
+      : `<span class="delta">—</span>`;
+    const itemsCell = `<span class="num">${r.items_before}</span><span class="delta"> → ${r.items_after}</span>`;
+    const dropCell = r.dropped > 0
+      ? `<span class="num t-warn">${r.dropped}</span>`
+      : `<span class="delta">0</span>`;
+    const vlmCell = r.t_vlm > 0
+      ? `<span class="num ${timeClass(r.t_vlm)}">${fmtSec(r.t_vlm)}s</span>`
+      : `<span class="delta">—</span>`;
+    const statusCell = r.status === "error"
+      ? `<span class="status-err">失败</span>`
+      : `<span class="status-ok">成功</span>`;
+
+    let html = `<tr class="${cls} ${expandedCls}" data-key="${key}">
+      <td class="time">${fmtTime(r.ts)}</td>
+      <td><span class="engine-tag ${engineCls}">${r.engine}</span></td>
+      <td title="${escapeHtml(r.src)}">${truncateSrc(r.src)}</td>
+      <td class="num">${r.width}×${r.height}</td>
+      <td class="num">${r.tiles}</td>
+      <td>${itemsCell}</td>
+      <td class="num ${timeClass(r.t_total)}">${fmtSec(r.t_total)}s</td>
+      <td class="num ${timeClass(r.t_ocr)}">${fmtSec(r.t_ocr)}s</td>
+      <td>${vlmCell}</td>
+      <td>${fallbackCell}</td>
+      <td>${dropCell}</td>
+      <td>${statusCell}</td>
+    </tr>`;
+    if (isExpanded) {
+      html += `<tr class="detail ${cls}"><td colspan="12">${renderDetail(r)}</td></tr>`;
+    }
+    return html;
+  });
+  tbody.innerHTML = rows.join("");
+
+  // wire row clicks to toggle expansion
+  tbody.querySelectorAll("tr[data-key]").forEach((tr) => {
+    tr.addEventListener("click", () => {
+      const key = tr.getAttribute("data-key");
+      expandedTs = (expandedTs === key) ? null : key;
+      render();
+    });
+  });
+}
+
+async function refresh() {
+  const wrap = $("tableWrap");
+  wrap.classList.add("loading");
+  try {
+    const res = await fetch(API, { cache: "no-store" });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const data = await res.json();
+    allRecords = data.records || [];
+    const d = new Date();
+    const pad = (n) => String(n).padStart(2, "0");
+    $("updated").textContent = `更新于 ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+    render();
+  } catch (e) {
+    $("updated").textContent = "刷新失败: " + e.message;
+  } finally {
+    wrap.classList.remove("loading");
+  }
+}
+
+function setupAutoRefresh() {
+  if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
+  if ($("autoRefresh").checked) {
+    refreshTimer = setInterval(refresh, parseInt($("refreshInterval").value, 10));
+  }
+}
+
+// wire UI events
+$("refreshBtn").addEventListener("click", refresh);
+["fEngine", "fStatus", "fFallback", "fSlow"].forEach((id) =>
+  $(id).addEventListener("change", render)
+);
+$("autoRefresh").addEventListener("change", setupAutoRefresh);
+$("refreshInterval").addEventListener("change", () => {
+  if ($("autoRefresh").checked) setupAutoRefresh();
+});
+
+// initial load
+refresh();
+setupAutoRefresh();
+</script>
+</body>
+</html>

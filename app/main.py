@@ -33,6 +33,12 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .config import Settings, get_settings
+from .log_buffer import (
+    LogRecord,
+    log_buffer_count as _buffer_count,
+    log_buffer_record as _record_call,
+    log_buffer_snapshot as _snapshot_calls,
+)
 from .pipeline import Pipeline
 from .schemas import (
     AnalyzeResponse,
@@ -116,6 +122,25 @@ def index() -> FileResponse:
     )
 
 
+@app.get("/logs", include_in_schema=False)
+def logs_page() -> FileResponse:
+    """Serve the standalone call-history log page (linked from the main UI header)."""
+    return FileResponse(
+        str(_STATIC_DIR / "logs.html"),
+        headers={"Cache-Control": "no-store, must-revalidate"},
+    )
+
+
+@app.get("/logs/api", tags=["logs"])
+def logs_api(limit: int = Query(200, ge=1, le=500)) -> dict:
+    """Return up to ``limit`` most-recent /analyze calls for the log page UI.
+
+    Records are oldest→newest; the UI re-sorts newest-first. In-memory only —
+    a process restart clears history (same trade-off as the ``_tasks`` dict).
+    """
+    return {"records": _snapshot_calls(limit=limit), "total": _buffer_count()}
+
+
 def _get_pipeline() -> Pipeline:
     """Lazy singleton — OCR model loads on first use, not import."""
     global _pipeline
@@ -142,6 +167,62 @@ def _get_pipeline_existing() -> "Pipeline | None":
 @app.get("/healthz")
 def healthz() -> dict:
     return {"status": "ok", "version": app.version}
+
+
+# ---------------------------------------------------------------------------
+# /analyze call logging → in-memory ring buffer for the /logs Web UI
+# ---------------------------------------------------------------------------
+
+# Fields the pipeline writes into stats_sink. Anything missing from the sink
+# (e.g. pipeline bailed early) defaults sensibly; see app/log_buffer.py:LogRecord
+# for the authoritative field list and meaning.
+# NOTE: width/height are NOT here — _archive_call passes them explicitly from
+# the HTTP layer's own image_size() reading (more reliable than trusting the
+# sink to be populated).
+_SINK_FIELDS = (
+    "tiles", "items_before", "items_after",
+    "t_preprocess", "t_ocr", "t_vlm", "t_dedupe", "t_annotate", "t_total",
+    "vlm_crops", "vlm_sent", "vlm_rescued", "vlm_empty",
+    "vlm_suspects", "vlm_rings", "fallback_threshold", "fallback_crops",
+    "dropped", "drop_threshold",
+)
+
+
+def _archive_call(
+    src: str,
+    engine: str,
+    w: int,
+    h: int,
+    stats_sink: dict,
+    task_id: str | None = None,
+    status: str = "ok",
+    error: str | None = None,
+) -> None:
+    """Reduce a finished pipeline.run() into a LogRecord and append it.
+
+    Called from both the sync and async /analyze paths. ``stats_sink`` is the
+    same dict the caller passed into pipeline.run; missing keys default per the
+    per-field ``_SINK_DEFAULTS`` table below.
+    """
+    # Per-field defaults when the sink doesn't carry a value (e.g. the pipeline
+    # bailed before populating it). Types must match LogRecord's dataclass.
+    _SINK_DEFAULTS = {
+        "fallback_threshold": 0.0,
+        "drop_threshold": 0.0,
+        "fallback_crops": [],
+    }
+    kwargs = {k: stats_sink.get(k, _SINK_DEFAULTS.get(k, 0)) for k in _SINK_FIELDS}
+    _record_call(LogRecord(
+        ts=time.time(),
+        task_id=task_id,
+        src=src,
+        engine=engine,
+        status=status,
+        error=error,
+        width=w,
+        height=h,
+        **kwargs,
+    ))
 
 
 async def _resolve_image(
@@ -356,21 +437,45 @@ async def analyze(
         # either — even "small" images can take a couple seconds.
         pipeline = _get_pipeline()
         loop = asyncio.get_event_loop()
+        stats_sink: dict = {}
         try:
             resp = await loop.run_in_executor(
                 _ocr_executor,
                 lambda: pipeline.run(
                     data, annotate=annotate, options=opt_obj, image_url=url,
-                    confidence_policy=True,
+                    confidence_policy=True, stats_sink=stats_sink,
                 ),
             )
         except RuntimeError as exc:
             # Engine misconfiguration (e.g. engine=vlm but VLM OCR disabled / no
             # key). Surface as a clear 503 instead of an opaque 500.
+            _archive_call(
+                src=src,
+                engine=opt_obj.engine if opt_obj and opt_obj.engine else settings.ocr_engine_default,
+                w=w, h=h, stats_sink=stats_sink,
+                status="error", error=f"{type(exc).__name__}: {exc}",
+            )
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except Exception as exc:
+            # Any other failure (e.g. PaddlePaddle's PreconditionNotMetError
+            # crashing mid-inference). Archive it so the /logs UI shows the
+            # failure — otherwise the most-need-to-investigate requests vanish
+            # without a trace. Re-raise as 503 with a short summary.
+            _archive_call(
+                src=src,
+                engine=opt_obj.engine if opt_obj and opt_obj.engine else settings.ocr_engine_default,
+                w=w, h=h, stats_sink=stats_sink,
+                status="error", error=f"{type(exc).__name__}: {exc}",
+            )
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         logger.info(
             "/analyze sync %dx%d %s items=%d %.2fs",
             w, h, src, len(resp.items), time.perf_counter() - t_start,
+        )
+        _archive_call(
+            src=src,
+            engine=opt_obj.engine if opt_obj and opt_obj.engine else settings.ocr_engine_default,
+            w=w, h=h, stats_sink=stats_sink,
         )
 
         # When a callback is requested, also publish the result under a task_id
@@ -400,17 +505,24 @@ async def analyze(
 
     def _run():
         t = time.perf_counter()
+        stats_sink: dict = {}
         try:
             _tasks[task_id].status = "running"
             pipeline = _get_pipeline()
             resp = pipeline.run(
-                data, annotate=annotate, options=opt_obj, image_url=url
+                data, annotate=annotate, options=opt_obj, image_url=url,
+                stats_sink=stats_sink,
             )
             _tasks[task_id].result = resp
             _tasks[task_id].status = "done"
             logger.info(
                 "/analyze async task=%s %dx%d %s items=%d done in %.2fs",
                 task_id, w, h, src, len(resp.items), time.perf_counter() - t,
+            )
+            _archive_call(
+                src=src,
+                engine=opt_obj.engine if opt_obj and opt_obj.engine else settings.ocr_engine_default,
+                w=w, h=h, stats_sink=stats_sink, task_id=task_id,
             )
             _fire_webhook(
                 task_id, "done",
@@ -425,6 +537,12 @@ async def analyze(
             logger.warning(
                 "/analyze async task=%s failed in %.2fs: %s",
                 task_id, time.perf_counter() - t, exc,
+            )
+            _archive_call(
+                src=src,
+                engine=opt_obj.engine if opt_obj and opt_obj.engine else settings.ocr_engine_default,
+                w=w, h=h, stats_sink=stats_sink, task_id=task_id,
+                status="error", error=err,
             )
             # Notify on failure too — the receiver otherwise can't tell a slow
             # job from a dead one and would poll forever.
