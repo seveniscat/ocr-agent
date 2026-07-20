@@ -43,3 +43,6 @@ samples/*.webp
 .uvicorn.pid
 ocr.log
 annotated.png
+
+# Windows service runtime logs (written by NSSM-configured service)
+logs/
