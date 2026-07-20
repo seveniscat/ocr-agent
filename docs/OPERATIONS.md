@@ -22,6 +22,7 @@
 | 安装目录 | `D:\bzdev\ocr-agent` |
 | Python | `D:\bzdev\ocr-agent\.venv\Scripts\python.exe` |
 | 日志目录 | `D:\bzdev\ocr-agent\logs\` |
+| SSH（远程管理） | `ssh <用户名>@10.1.74.31`（已启用，见 §9.4） |
 
 ---
 
@@ -363,19 +364,33 @@ reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU" /v NoAutoReb
 
 > `.env` 含敏感凭据，**不要备份到公网云盘**，除非确认安全。
 
-### 9.4 远程管理（P1，建议）
+### 9.4 远程管理（P1，已就绪）
 
-桌面版默认不带 SSH Server。两个选择：
+桌面版默认不带 SSH Server。本机**已安装并启用 OpenSSH Server**：
 
-- **远程桌面（RDP）**：Win11 自带，最简单。系统属性 → 远程 → 允许远程连接。适合偶尔登录操作。
-- **OpenSSH Server**：命令行远程，适合脚本化运维。
-  ```powershell
-  Add-WindowsCapability -Online -Name 'OpenSSH.Server~~~~0.0.1.0'
-  Start-Service sshd
-  Set-Service -Name sshd -StartupType Automatic
-  New-NetFirewallRule -Name OpenSSH-Server-In-TCP -DisplayName 'OpenSSH Server (sshd) Inbound' `
-      -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22
-  ```
+- 服务：`sshd`，状态 Running，启动类型 Automatic（开机自启）
+- 监听：`0.0.0.0:22`（IPv4 + IPv6）
+- 防火墙：`OpenSSH-Server-In-TCP` 规则已放行 22 端口入站（任意 Profile）
+
+**连接方式**（从局域网另一台机器）：
+```bash
+ssh <你的Windows用户名>@10.1.74.31
+# 例: ssh zhangbing@10.1.74.31
+```
+登录后进入 cmd（默认 Shell）。如想把默认 Shell 改成 PowerShell：
+```powershell
+# 管理员 PowerShell 跑一次
+New-ItemProperty -Path "HKLM:\SOFTWARE\OpenSSH" -Name DefaultShell -Value "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" -PropertyType String -Force
+```
+
+**OpenSSH 常用运维命令**：
+```cmd
+sc query sshd              :: 查状态
+net stop sshd              :: 停
+net start sshd             :: 启动
+```
+
+> 💡 另一个远程选项是**远程桌面（RDP）**：Win11 自带，系统属性 → 远程 → 允许远程连接。适合需要图形界面的操作。SSH 适合脚本化、轻量命令行运维。
 
 ### 9.5 监控 / 告警（P1，建议）
 
