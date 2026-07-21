@@ -94,6 +94,35 @@ class Settings(BaseSettings):
                     "keep the detector polygon AND emit a base64 PNG crop. Off → "
                     "the boxes are still kept (recognized=False) but with no crop_b64.",
     )
+    # ---- PaddleOCR runtime (CPU inference performance) ----------------------
+    # All three default to "no change" so the existing behavior is preserved
+    # unless a key is explicitly set in .env. Enable them when /logs shows a
+    # rec bottleneck (high ocr_boxes_recognized × long t_ocr).
+    ocr_cpu_threads: int = Field(
+        0, ge=0,
+        description="PaddleOCR `cpu_threads` (oneDNN/MKL inference threads). "
+                    "0 = leave PaddleOCR's default (10). Set to your logical-core "
+                    "count (e.g. 20 on an i5-13500) to double throughput on rec-"
+                    "bound requests. Do NOT exceed logical cores — thread "
+                    "contention will slow it down.",
+    )
+    ocr_rec_batch_size: int | None = Field(
+        None, ge=1, le=512,
+        description="PaddleOCR `text_recognition_batch_size`. None = leave "
+                    "PaddleOCR's default. The recognizer (PP-OCRv6 rec is a "
+                    "Transformer) scales well with batch — try 30 or 50 when "
+                    "a request has many text boxes. Larger batch = higher "
+                    "throughput but more memory; very large batches can slightly "
+                    "change recognition on padded rows, so verify accuracy on "
+                    "your real images after changing.",
+    )
+    ocr_enable_mkldnn: bool = Field(
+        True,
+        description="PaddleOCR `enable_mkldnn` (oneDNN acceleration). Default "
+                    "True matches PaddleOCR's own default. Disable only when "
+                    "debugging oneDNN issues — turning it off will make CPU "
+                    "inference several times slower.",
+    )
     rec_confidence_fallback: float = Field(
         0.94, ge=0.0, le=1.0,
         description="[vlm_ocr_fallback] Recognition confidence below which a crop "

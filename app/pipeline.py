@@ -171,6 +171,13 @@ class Pipeline:
         t_ocr = time.perf_counter() - t_ocr
         n_after_ocr = len(all_items)
 
+        # Pull per-tile OCR stats from the engine (boxes_detected / recognized,
+        # predict wall time). Empty when the VLM engine ran or engine isn't
+        # loaded yet — `.get()` keeps the sink clean in those cases.
+        ocr_engine_stats = {}
+        if engine != "vlm" and self._ocr is not None:
+            ocr_engine_stats = self._ocr.ocr_stats
+
         # Re-derive granularity + paragraph params from the request so the
         # shared post-processing (paragraph merge etc.) applies to BOTH engines.
         if options is not None:
@@ -269,14 +276,19 @@ class Pipeline:
         # --- per-stage timing log. vlm_calls is the number of CROPS inspected;
         # they're sent in ~⌈crops/batch⌉ batched requests (each ~20 crops in
         # one multi-image call), so wall-clock no longer scales linearly with it.
-        # n_dropped is only nonzero on the /analyze path (confidence_policy). ---
+        # n_dropped is only nonzero on the /analyze path (confidence_policy).
+        # boxes=det/rec is the detector-vs-recognizer box count (cumulative
+        # across tiles): det >> rec → detector noise (raise det_thresh); high
+        # rec count × long ocr → rec bottleneck (tune cpu_threads / rec_batch). ---
         t_total = time.perf_counter() - t0
+        _bd = ocr_engine_stats.get("boxes_detected", 0)
+        _br = ocr_engine_stats.get("boxes_recognized", 0)
         logger.info(
             "pipeline.run: %dx%d→%dx%d tiles=%d items=%d→%d "
-            "preprocess=%.2fs ocr=%.2fs vlm(crops=%d)=%.2fs dedupe=%.2fs "
-            "drop=%d total=%.2fs",
+            "preprocess=%.2fs ocr=%.2fs boxes=det/rec=%d/%d "
+            "vlm(crops=%d)=%.2fs dedupe=%.2fs drop=%d total=%.2fs",
             orig_w, orig_h, w, h, grid.count, n_after_ocr, len(all_items),
-            t_pre, t_ocr, vlm_calls, t_vlm, t_dedup, n_dropped, t_total,
+            t_pre, t_ocr, _bd, _br, vlm_calls, t_vlm, t_dedup, n_dropped, t_total,
         )
 
         response = AnalyzeResponse(
@@ -308,6 +320,10 @@ class Pipeline:
                 "items_after": len(all_items),
                 "t_preprocess": t_pre,
                 "t_ocr": t_ocr,
+                "t_ocr_predict": ocr_engine_stats.get("t_predict", 0.0),
+                "ocr_predict_calls": ocr_engine_stats.get("predict_calls", 0),
+                "ocr_boxes_detected": ocr_engine_stats.get("boxes_detected", 0),
+                "ocr_boxes_recognized": ocr_engine_stats.get("boxes_recognized", 0),
                 "t_vlm": t_vlm,
                 "t_dedupe": t_dedup,
                 "t_annotate": t_annot,
@@ -400,6 +416,9 @@ class Pipeline:
         all_items: list[Item] = []
 
         ocr = self._get_ocr()
+        # Reset per-request stats so the counters reflect THIS run only (the
+        # engine is a singleton reused across requests).
+        ocr.reset_stats()
         codes = self._get_codes_or_none()  # may be None (lib missing) → skip
 
         # Translate per-request OCR overrides to detector call args.

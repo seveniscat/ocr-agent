@@ -171,3 +171,140 @@ def test_no_unrecognized_in_paragraph_mode(monkeypatch):
 
     # All returned dets are recognized paragraph blocks (recovery skipped).
     assert all(d.recognized for d in dets)
+
+
+# ---------------------------------------------------------------------------
+# OCR stats accounting (per-tile predict timing + det/rec box counts)
+# ---------------------------------------------------------------------------
+
+
+def test_stats_track_predict_calls_and_box_counts(monkeypatch):
+    """detect_and_recognize() accumulates predict_calls, box counts, and time."""
+    result = _result(
+        rec_polys=[_quad(10, 10, 60, 40), _quad(70, 10, 120, 40)],
+        rec_texts=["A", "B"],
+        rec_scores=[0.95, 0.88],
+        dt_polys=[_quad(10, 10, 60, 40), _quad(70, 10, 120, 40), _quad(0, 0, 9, 9)],
+    )
+    engine = _make_engine(monkeypatch, result, emit_crops=False)
+    assert engine.ocr_stats == {
+        "predict_calls": 0, "boxes_detected": 0,
+        "boxes_recognized": 0, "t_predict": 0.0,
+    }
+
+    engine.detect_and_recognize(_TILE, granularity="line")
+
+    s = engine.ocr_stats
+    assert s["predict_calls"] == 1
+    assert s["boxes_detected"] == 3   # len(dt_polys)
+    assert s["boxes_recognized"] == 2  # len(rec_polys)
+    assert s["t_predict"] >= 0.0       # perf_counter delta (>= 0)
+
+    # Second call accumulates.
+    engine.detect_and_recognize(_TILE, granularity="line")
+    s = engine.ocr_stats
+    assert s["predict_calls"] == 2
+    assert s["boxes_detected"] == 6
+    assert s["boxes_recognized"] == 4
+
+
+def test_stats_reset_clears_counters(monkeypatch):
+    """reset_stats() zeroes every field so the next request starts clean."""
+    result = _result(
+        rec_polys=[_quad(10, 10, 60, 40)],
+        rec_texts=["A"],
+        rec_scores=[0.9],
+        dt_polys=[_quad(10, 10, 60, 40)],
+    )
+    engine = _make_engine(monkeypatch, result, emit_crops=False)
+    engine.detect_and_recognize(_TILE, granularity="line")
+    assert engine.ocr_stats["predict_calls"] == 1
+
+    engine.reset_stats()
+    assert engine.ocr_stats == {
+        "predict_calls": 0, "boxes_detected": 0,
+        "boxes_recognized": 0, "t_predict": 0.0,
+    }
+
+
+def test_stats_empty_result_still_accounts_for_call(monkeypatch):
+    """A predict() returning no result still counts the call and its time."""
+    engine = _make_engine(monkeypatch, None, emit_crops=False)
+    engine._ocr = type(engine._ocr)(None)  # FakeOCR with None result
+    dets = engine.detect_and_recognize(_TILE, granularity="line")
+
+    assert dets == []
+    s = engine.ocr_stats
+    assert s["predict_calls"] == 1
+    assert s["boxes_detected"] == 0
+    assert s["boxes_recognized"] == 0
+
+
+# ---------------------------------------------------------------------------
+# _ensure_loaded forwards CPU runtime kwargs to PaddleOCR(...)
+# ---------------------------------------------------------------------------
+
+
+class _PaddleOCRSpy:
+    """Captures the kwargs OCREngine passes to PaddleOCR().
+
+    Installed in place of `paddleocr.PaddleOCR` so we can assert the runtime
+    tuning knobs (cpu_threads / text_recognition_batch_size / enable_mkldnn)
+    are forwarded correctly without loading any real model.
+    """
+
+    def __init__(self, *args, **kwargs):
+        self.kwargs = kwargs
+
+    def predict(self, arr, **kwargs):
+        return []
+
+
+def _install_paddleocr_spy(monkeypatch):
+    """Patch `from paddleocr import PaddleOCR` inside detector._ensure_loaded.
+
+    Returns the spy class; after `_ensure_loaded()` runs, `spy.kwargs` holds the
+    kwargs the engine forwarded.
+    """
+    import sys
+    spy = _PaddleOCRSpy
+    fake_module = type("M", (), {"PaddleOCR": spy})
+    monkeypatch.setitem(sys.modules, "paddleocr", fake_module)
+    return spy
+
+
+def test_ensure_loaded_forwards_cpu_runtime_overrides(monkeypatch):
+    """When cpu_threads/rec_batch_size are set, they reach PaddleOCR()."""
+    spy = _install_paddleocr_spy(monkeypatch)
+    s = Settings()
+    monkeypatch.setattr(s, "ocr_cpu_threads", 20)
+    monkeypatch.setattr(s, "ocr_rec_batch_size", 50)
+    monkeypatch.setattr(s, "ocr_enable_mkldnn", False)
+
+    engine = OCREngine(s)
+    engine._ensure_loaded()
+
+    kws = engine._ocr.kwargs
+    assert kws["cpu_threads"] == 20
+    assert kws["text_recognition_batch_size"] == 50
+    assert kws["enable_mkldnn"] is False
+
+
+def test_ensure_loaded_defaults_omit_cpu_threads_and_rec_batch(monkeypatch):
+    """At default settings, only enable_mkldnn is forwarded (= True).
+
+    cpu_threads=0 and rec_batch_size=None must NOT be passed so PaddleOCR's own
+    defaults kick in (preserves the pre-tuning behavior).
+    """
+    spy = _install_paddleocr_spy(monkeypatch)
+    s = Settings()  # all defaults
+
+    engine = OCREngine(s)
+    engine._ensure_loaded()
+
+    kws = engine._ocr.kwargs
+    assert "cpu_threads" not in kws
+    assert "text_recognition_batch_size" not in kws
+    # mkldnn is always forwarded (even at default True) — turning it off is a
+    # documented debugging knob, so it's part of the contract.
+    assert kws["enable_mkldnn"] is True

@@ -56,10 +56,20 @@ class LogRecord:
     # --- per-stage wall time (seconds) ---------------------------------
     t_preprocess: float = 0.0
     t_ocr: float = 0.0
+    t_ocr_predict: float = 0.0      # wall time inside PaddleOCR.predict() (sum across tiles)
     t_vlm: float = 0.0              # time spent in VLM fallback re-reads
     t_dedupe: float = 0.0
     t_annotate: float = 0.0         # annotated image rendering (0 if not requested)
     t_total: float = 0.0
+
+    # --- OCR box-count breakdown (diagnostic for CPU-tuning) ------------
+    # predict() is a black box (det+rec fused), so we can't split det vs rec
+    # TIME, but the box COUNT ratio is the signal: det >> rec → detector noise
+    # (raise det_thresh); high rec count × long t_ocr → rec bottleneck (tune
+    # cpu_threads / rec_batch_size). All zero on the VLM engine path.
+    ocr_predict_calls: int = 0       # number of predict() calls (= tile count)
+    ocr_boxes_detected: int = 0      # detector output (dt_polys), includes rec-dropped
+    ocr_boxes_recognized: int = 0    # recognizer output (rec_polys), passed threshold
 
     # --- VLM fallback (circular-text + low-confidence re-read) ---------
     # All zero when fallback didn't run (VLM disabled / everything confident).

@@ -261,9 +261,14 @@ function applyFilters(records) {
 }
 
 function renderDetail(r) {
+  // OCR box-count breakdown: det >> rec → detector noise; high rec × long ocr
+  // → rec bottleneck (tune cpu_threads / rec_batch_size). Hidden on VLM engine.
+  const ocrBoxes = (r.engine !== "vlm" && (r.ocr_boxes_detected || r.ocr_boxes_recognized))
+    ? `  (det/rec=${r.ocr_boxes_detected || 0}/${r.ocr_boxes_recognized || 0})`
+    : "";
   const rows = [
     ["preprocess", fmtSec(r.t_preprocess) + "s"],
-    ["OCR", fmtSec(r.t_ocr) + "s"],
+    ["OCR", fmtSec(r.t_ocr) + "s" + ocrBoxes],
     ["VLM 兜底", fmtSec(r.t_vlm) + "s"],
     ["dedupe", fmtSec(r.t_dedupe) + "s"],
     ["annotate", fmtSec(r.t_annotate) + "s"],

@@ -181,7 +181,9 @@ def healthz() -> dict:
 # sink to be populated).
 _SINK_FIELDS = (
     "tiles", "items_before", "items_after",
-    "t_preprocess", "t_ocr", "t_vlm", "t_dedupe", "t_annotate", "t_total",
+    "t_preprocess", "t_ocr", "t_ocr_predict",
+    "t_vlm", "t_dedupe", "t_annotate", "t_total",
+    "ocr_predict_calls", "ocr_boxes_detected", "ocr_boxes_recognized",
     "vlm_crops", "vlm_sent", "vlm_rescued", "vlm_empty",
     "vlm_suspects", "vlm_rings", "fallback_threshold", "fallback_crops",
     "dropped", "drop_threshold",
