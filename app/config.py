@@ -246,6 +246,17 @@ class Settings(BaseSettings):
                     "response_format=json_object, so JSON output relies on our "
                     "tolerant parser instead. Turn on for QA-reasoning tasks.",
     )
+    vlm_min_crop_side: int = Field(
+        16, ge=1, le=1024,
+        description="Minimum width AND height (px) of a crop sent to the VLM. "
+                    "Crops smaller than this on either side are skipped (return "
+                    "empty, not sent). Default 16 with a safety margin over "
+                    "DashScope's hard 10px limit — a crop that small can't hold "
+                    "legible characters anyway, so skipping loses nothing and "
+                    "avoids one bad crop poisoning the whole batch (DashScope "
+                    "returns HTTP 400 for undersized images, which the batch "
+                    "wrapper treats as total failure).",
+    )
 
     # ---- VLM OCR engine (Qwen-VL grounding OCR; alternative to PaddleOCR) ----
     # When selected (per-request ``engine=vlm`` or ocr_engine_default="vlm"),

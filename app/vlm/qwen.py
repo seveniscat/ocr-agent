@@ -40,17 +40,18 @@ class QwenVLM(VLMProvider):
         )
         self._model = settings.vlm_model
         self._enable_thinking = getattr(settings, "vlm_enable_thinking", False)
+        # Honored by VLMProvider._crop_bbox_or_none (shared with
+        # recognize_crop_with_prompt). DashScope rejects crops < 10px with HTTP
+        # 400; the default 16px adds a safety margin AND filters crops too
+        # small to hold legible characters.
+        self._min_crop_side = getattr(settings, "vlm_min_crop_side", 16)
 
     def recognize_crop(self, image, polygon) -> tuple[str, float]:
         # Tight bbox around the quad (art text on dielines is mostly axis-aligned).
-        xs = [p[0] for p in polygon]
-        ys = [p[1] for p in polygon]
-        x1, y1, x2, y2 = int(min(xs)), int(min(ys)), int(max(xs)), int(max(ys))
-        h, w = image.shape[:2]
-        x1, x2 = max(0, x1), min(w, x2)
-        y1, y2 = max(0, y1), min(h, y2)
-        if x2 <= x1 or y2 <= y1:
+        bbox = self._crop_bbox_or_none(image, polygon)
+        if bbox is None:
             return "", 0.0
+        x1, y1, x2, y2 = bbox
 
         crop = image[y1:y2, x1:x2]
         b64 = _to_b64_jpeg(crop)

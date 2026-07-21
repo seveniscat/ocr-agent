@@ -25,6 +25,39 @@ class VLMProvider(abc.ABC):
 
     name: str = "base"
 
+    # Minimum width AND height (px) of a crop we'll send to the VLM. 0 = no
+    # check. Subclasses (QwenVLM) override from settings.vlm_min_crop_side so
+    # the threshold is configurable. Crops below this are silently dropped
+    # (returned as empty) — see _crop_bbox_or_none for the why.
+    _min_crop_side: int = 0
+
+    def _crop_bbox_or_none(
+        self, image: "np.ndarray", polygon: list[list[float]]
+    ) -> tuple[int, int, int, int] | None:
+        """Axis-aligned bbox of ``polygon`` clamped to ``image``, or None.
+
+        Returns None when the bbox is empty/degenerate OR smaller than
+        ``self._min_crop_side`` on either axis. The min-side guard exists
+        because DashScope (and most VLM endpoints) reject images below ~10px
+        with HTTP 400, and the batch wrapper treats one failure as total
+        failure — so a single 7x36 crop poisons the whole fallback batch.
+        Crops that small can't hold legible characters anyway, so dropping
+        them loses nothing.
+        """
+        xs = [p[0] for p in polygon]
+        ys = [p[1] for p in polygon]
+        x1, y1, x2, y2 = int(min(xs)), int(min(ys)), int(max(xs)), int(max(ys))
+        h, w = image.shape[:2]
+        x1, x2 = max(0, x1), min(w, x2)
+        y1, y2 = max(0, y1), min(h, y2)
+        if x2 <= x1 or y2 <= y1:
+            return None
+        if self._min_crop_side > 0 and (
+            x2 - x1 < self._min_crop_side or y2 - y1 < self._min_crop_side
+        ):
+            return None
+        return x1, y1, x2, y2
+
     @abc.abstractmethod
     def recognize_crop(
         self, image: "np.ndarray", polygon: list[list[float]]
@@ -72,14 +105,10 @@ class VLMProvider(abc.ABC):
         ``ask_image`` (QwenVLM does). Providers without ``ask_image`` raise
         NotImplementedError from ``ask_image``, surfaced to the caller.
         """
-        xs = [p[0] for p in polygon]
-        ys = [p[1] for p in polygon]
-        x1, y1, x2, y2 = int(min(xs)), int(min(ys)), int(max(xs)), int(max(ys))
-        h, w = image.shape[:2]
-        x1, x2 = max(0, x1), min(w, x2)
-        y1, y2 = max(0, y1), min(h, y2)
-        if x2 <= x1 or y2 <= y1:
+        bbox = self._crop_bbox_or_none(image, polygon)
+        if bbox is None:
             return "", 0.0
+        x1, y1, x2, y2 = bbox
 
         from .qwen import _to_b64_jpeg  # local import avoids a hard PIL dep at import
 

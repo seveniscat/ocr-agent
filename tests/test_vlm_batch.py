@@ -27,12 +27,18 @@ from app.vlm.qwen import QwenVLM
 # ---------------------------------------------------------------------------
 
 
-def _make_vlm() -> QwenVLM:
-    """Build a QwenVLM with a stubbed client (bypasses __init__/key check)."""
+def _make_vlm(min_crop_side: int = 0) -> QwenVLM:
+    """Build a QwenVLM with a stubbed client (bypasses __init__/key check).
+
+    ``min_crop_side`` defaults to 0 (no filtering) so existing concurrency /
+    ordering tests aren't affected by the size guard. Tests that exercise the
+    guard pass an explicit value.
+    """
     vlm = object.__new__(QwenVLM)
     vlm._client = None
     vlm._model = "qwen3.7-plus"
     vlm._enable_thinking = False
+    vlm._min_crop_side = min_crop_side
     return vlm
 
 
@@ -135,7 +141,7 @@ def test_pipeline_vlm_fallback_skipped_by_default():
             bbox=[10, 10, 30, 30], confidence=0.1, source="paddleocr",
         ),
     ]
-    out, n_crops = pipe._maybe_vlm_fallback(_img(), items)
+    out, n_crops, _stats = pipe._maybe_vlm_fallback(_img(), items)
     assert n_crops == 0
     assert out[0].source == "paddleocr"
 
@@ -174,7 +180,7 @@ def test_pipeline_vlm_fallback_uses_batch(monkeypatch):
 
     monkeypatch.setattr(pipe, "_get_vlm", lambda: _FakeVLM())
 
-    out, n_crops = pipe._maybe_vlm_fallback(_img(), items)
+    out, n_crops, _stats = pipe._maybe_vlm_fallback(_img(), items)
 
     assert calls["batch"] == 1          # ONE batched call, not 2 serial
     assert n_crops == 2
@@ -222,7 +228,7 @@ def test_pipeline_vlm_fallback_logs_sent_rescued_empty(monkeypatch, caplog):
     monkeypatch.setattr(pipe, "_get_vlm", lambda: _FakeVLM())
 
     with caplog.at_level(logging.INFO, logger="app.pipeline"):
-        out, n_crops = pipe._maybe_vlm_fallback(_img(), items)
+        out, n_crops, _stats = pipe._maybe_vlm_fallback(_img(), items)
 
     assert n_crops == 3
     # Find the summary line and check its counts.
@@ -320,4 +326,116 @@ def test_drop_low_confidence_clamped_when_drop_above_fallback():
     ]
     kept = pipe._drop_low_confidence(items)
     assert {it.id for it in kept} == {"t2"}
+
+
+# ---------------------------------------------------------------------------
+# Min-crop-side guard — undersized crops must be skipped, not sent to the VLM
+# (DashScope returns HTTP 400 for <10px images, which would otherwise poison
+# the whole batch via the batch wrapper's fail-fast semantics).
+# ---------------------------------------------------------------------------
+
+
+def _stub_client_tracking_calls(vlm: QwenVLM):
+    """Record each create() call; return ("TEXT", 0.8) on every invocation."""
+    calls = {"n": 0}
+
+    class _Create:
+        def create(self, **kwargs):
+            calls["n"] += 1
+            return SimpleNamespace(
+                choices=[SimpleNamespace(
+                    message=SimpleNamespace(content="TEXT")
+                )]
+            )
+    vlm._client = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=_Create().create))
+    )
+    return calls
+
+
+def _poly(x1, y1, x2, y2):
+    """4-point polygon (list of [x,y]) for an axis-aligned box."""
+    return [[x1, y1], [x2, y1], [x2, y2], [x1, y2]]
+
+
+def test_recognize_crop_with_prompt_skips_undersized():
+    """A crop smaller than min_crop_side on EITHER axis is skipped (empty result,
+    no API call). Mirrors the DashScope failure mode that triggered this guard."""
+    vlm = _make_vlm(min_crop_side=16)
+    calls = _stub_client_tracking_calls(vlm)
+    img = _img()  # 100x100
+
+    # 36x7 (height too small — exactly the failing case from production logs).
+    text, conf = vlm.recognize_crop_with_prompt(
+        img, _poly(10, 10, 46, 17), prompt="read"
+    )
+    assert text == ""
+    assert conf == 0.0
+    assert calls["n"] == 0  # no API call made
+
+    # 7x36 (width too small).
+    text, conf = vlm.recognize_crop_with_prompt(
+        img, _poly(10, 10, 17, 46), prompt="read"
+    )
+    assert text == ""
+    assert calls["n"] == 0
+
+    # Exactly 16x16 passes (boundary: equal is allowed).
+    text, conf = vlm.recognize_crop_with_prompt(
+        img, _poly(10, 10, 26, 26), prompt="read"
+    )
+    assert text == "TEXT"
+    assert conf == 0.8
+    assert calls["n"] == 1
+
+
+def test_recognize_crop_with_prompt_no_guard_when_min_side_zero():
+    """min_crop_side=0 disables the guard — even tiny crops are sent."""
+    vlm = _make_vlm(min_crop_side=0)
+    calls = _stub_client_tracking_calls(vlm)
+    img = _img()
+
+    text, conf = vlm.recognize_crop_with_prompt(
+        img, _poly(10, 10, 12, 12), prompt="read"  # 2x2
+    )
+    assert text == "TEXT"
+    assert calls["n"] == 1
+
+
+def test_recognize_crops_with_prompts_batch_skips_undersized_silently():
+    """In the batch path, undersized crops return ("", 0.0) without raising,
+    so one bad crop no longer fails the whole batch."""
+    vlm = _make_vlm(min_crop_side=16)
+    _stub_client_tracking_calls(vlm)
+    img = _img()
+
+    crops = [
+        (_poly(10, 10, 60, 40), "p1"),    # 50x30 — OK
+        (_poly(10, 10, 20, 13), "p2"),    # 10x3 — too small (the bug)
+        (_poly(10, 10, 50, 50), "p3"),    # 40x40 — OK
+    ]
+    results = vlm.recognize_crops_with_prompts_batch(img, crops)
+
+    assert len(results) == 3
+    assert results[0] == ("TEXT", 0.8)   # OK crop recognized
+    assert results[1] == ("", 0.0)       # undersized → empty, no exception
+    assert results[2] == ("TEXT", 0.8)   # OK crop recognized
+
+
+def test_recognize_crop_skips_undersized():
+    """The legacy single-crop path (recognize_crop) honors the same guard."""
+    vlm = _make_vlm(min_crop_side=16)
+    calls = _stub_client_tracking_calls(vlm)
+    img = _img()
+
+    text, conf = vlm.recognize_crop(img, _poly(10, 10, 20, 17))  # 10x7 — too small
+    assert text == ""
+    assert conf == 0.0
+    assert calls["n"] == 0
+
+
+def test_settings_vlm_min_crop_side_default():
+    """Default threshold is 16 (safety margin over DashScope's 10px hard limit)."""
+    s = Settings()
+    assert s.vlm_min_crop_side == 16
 
