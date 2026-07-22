@@ -75,14 +75,25 @@ if _cors_raw:
     _origins = (
         ["*"] if _cors_raw == "*" else [o.strip() for o in _cors_raw.split(",") if o.strip()]
     )
+    # max_age=600: the browser caches the preflight (OPTIONS) result for 10 min,
+    # so subsequent cross-origin requests skip the preflight entirely. This
+    # shrinks the failure window for "occasional CORS errors" — they're almost
+    # always a connection drop (server restart / long OCR request) that the
+    # browser misreports as CORS, and reducing preflight frequency cuts the
+    # chances of one landing on a broken connection.
+    _CORS_MAX_AGE = 600
     app.add_middleware(
         CORSMiddleware,
         allow_origins=_origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
+        max_age=_CORS_MAX_AGE,
     )
-    logger.info("CORS allowed origins: %s", _origins)
+    logger.info(
+        "CORS allowed origins: %s (preflight cache: max_age=%ds)",
+        _origins, _CORS_MAX_AGE,
+    )
 else:
     logger.info("CORS disabled (OCR_CORS_ORIGINS empty)")
 
