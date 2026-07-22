@@ -25,6 +25,7 @@ so ``import app.main`` stays fast and tests can mock the engine.
 from __future__ import annotations
 
 import logging
+import threading
 from dataclasses import dataclass
 from typing import Any
 
@@ -220,9 +221,22 @@ class OCREngine:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self._ocr: Any = None
+        # PaddleOCR.predict() is NOT thread-safe: two concurrent calls on the
+        # same instance corrupt PaddlePaddle's internal state, after which
+        # every subsequent predict() raises. The Pipeline is a process-wide
+        # singleton shared by the OCR thread pool, so without this lock the
+        # 2nd concurrent request poisons the engine and the 3rd+ all fail
+        # with 503 (observed in production: 6 simultaneous /analyze → first
+        # 2 succeed, next 4 all 503). Serializing predict() makes concurrent
+        # requests queue on the lock instead of crashing the engine. The
+        # engine is the bottleneck anyway (CPU-bound), so this costs nothing
+        # in throughput — it just trades random 503s for predictable waits.
+        self._predict_lock = threading.Lock()
         # Cumulative OCR stats since engine load. Reset by the caller (pipeline)
         # at the start of each request so the numbers reflect one run. Read via
-        # the `.ocr_stats` property after the OCR stage.
+        # the `.ocr_stats` property after the OCR stage. Guarded by
+        # `_predict_lock` since they're updated from inside the predict critical
+        # section and read from the request thread.
         self._stats = {
             "predict_calls": 0,   # number of predict() invocations (= tile count)
             "boxes_detected": 0,  # detector output (dt_polys), includes rec-dropped
@@ -327,39 +341,46 @@ class OCREngine:
             kwargs["text_det_thresh"] = det_thresh
 
         import time as _time
-        _t0 = _time.perf_counter()
-        results = self._ocr.predict(arr, **kwargs)
-        _t_predict = _time.perf_counter() - _t0
+        # Serialize the predict() call AND the stats update. predict() itself
+        # isn't thread-safe (see _predict_lock docstring); the stats write is
+        # bundled in so the lock also gives us atomic accounting. Post-processing
+        # (TextDetection building, crop encoding, paragraph merge) runs OUTSIDE
+        # the lock — it doesn't touch the PaddleOCR instance.
+        with self._predict_lock:
+            _t0 = _time.perf_counter()
+            results = self._ocr.predict(arr, **kwargs)
+            _t_predict = _time.perf_counter() - _t0
 
-        if not results:
-            # Still account for the time spent, even on empty results.
+            if not results:
+                # Still account for the time spent, even on empty results.
+                self._stats["predict_calls"] += 1
+                self._stats["t_predict"] += _t_predict
+                return []
+
+            r0 = results[0]
+            if r0 is None:  # defensive: predict() shouldn't yield [None], but guard
+                self._stats["predict_calls"] += 1
+                self._stats["t_predict"] += _t_predict
+                return []
+            polys = r0.get("rec_polys") or []
+            texts = r0.get("rec_texts") or []
+            scores = r0.get("rec_scores") or []
+            dt_polys = r0.get("dt_polys") or []
+            n = min(len(polys), len(texts), len(scores))
+
+            # Per-tile + cumulative stats. predict() is a black box (det+rec
+            # fused), so we can't split det vs rec time here; the det/rec BOX
+            # COUNT ratio is the diagnostic signal instead (det >> rec →
+            # detector noise; high rec count × long predict → rec is the
+            # bottleneck → tune batch/threads).
             self._stats["predict_calls"] += 1
+            self._stats["boxes_detected"] += len(dt_polys) or n
+            self._stats["boxes_recognized"] += n
             self._stats["t_predict"] += _t_predict
-            return []
-
-        r0 = results[0]
-        if r0 is None:  # defensive: predict() shouldn't yield [None], but guard
-            self._stats["predict_calls"] += 1
-            self._stats["t_predict"] += _t_predict
-            return []
-        polys = r0.get("rec_polys") or []
-        texts = r0.get("rec_texts") or []
-        scores = r0.get("rec_scores") or []
-        dt_polys = r0.get("dt_polys") or []
-        n = min(len(polys), len(texts), len(scores))
-
-        # Per-tile + cumulative stats. predict() is a black box (det+rec fused),
-        # so we can't split det vs rec time here; the det/rec BOX COUNT ratio is
-        # the diagnostic signal instead (det >> rec → detector noise; high rec
-        # count × long predict → rec is the bottleneck → tune batch/threads).
-        self._stats["predict_calls"] += 1
-        self._stats["boxes_detected"] += len(dt_polys) or n
-        self._stats["boxes_recognized"] += n
-        self._stats["t_predict"] += _t_predict
-        logger.info(
-            "ocr tile: predict=%.2fs boxes=det/rec=%d/%d",
-            _t_predict, len(dt_polys) or n, n,
-        )
+            logger.info(
+                "ocr tile: predict=%.2fs boxes=det/rec=%d/%d",
+                _t_predict, len(dt_polys) or n, n,
+            )
 
         gran = granularity or self.settings.ocr_granularity
 

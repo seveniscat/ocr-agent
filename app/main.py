@@ -102,8 +102,15 @@ else:
 # BackgroundTasks would block the single event-loop thread and stall EVERY
 # request — including the trivial GET /tasks/{id} poll. Offloading to a real
 # OS thread keeps the event loop free to answer polls while OCR grinds away.
-# max_workers=2: OCR is CPU/memory-bound; more workers risk OOM and CPU
-# contention on big die-line tiles. Bump if you have the headroom.
+#
+# max_workers=2: PaddleOCR.predict() is NOT thread-safe, so OCREngine guards
+# it with an internal Lock — concurrent requests serialize on that lock, which
+# means OCR throughput is ~1x regardless of this pool size. We still keep 2
+# workers so the VLM fallback, dedupe, and image-download stages of one
+# request can overlap with the predict() of another (those stages don't touch
+# the PaddleOCR instance). Going higher than 2 only helps if predict() becomes
+# thread-safe (multi-process deployment is the real answer for >1x OCR
+# throughput — see docs/OPERATIONS.md).
 _ocr_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="ocr-worker")
 
 # Dedicated thread pool for outbound webhook delivery. Kept separate from the
@@ -462,25 +469,40 @@ async def analyze(
         except RuntimeError as exc:
             # Engine misconfiguration (e.g. engine=vlm but VLM OCR disabled / no
             # key). Surface as a clear 503 instead of an opaque 500.
+            logger.warning(
+                "/analyze sync FAILED (RuntimeError, %dx%d %s): %s",
+                w, h, src, exc,
+            )
             _archive_call(
                 src=src,
                 engine=opt_obj.engine if opt_obj and opt_obj.engine else settings.ocr_engine_default,
                 w=w, h=h, stats_sink=stats_sink,
                 status="error", error=f"{type(exc).__name__}: {exc}",
             )
+            # Config errors aren't transient (no Retry-After); plain 503.
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         except Exception as exc:
             # Any other failure (e.g. PaddlePaddle's PreconditionNotMetError
             # crashing mid-inference). Archive it so the /logs UI shows the
             # failure — otherwise the most-need-to-investigate requests vanish
-            # without a trace. Re-raise as 503 with a short summary.
+            # without a trace. Re-raise as 503 + Retry-After so callers know to
+            # back off and retry.
+            logger.exception(
+                "/analyze sync FAILED (%s, %dx%d %s)",
+                type(exc).__name__, w, h, src,
+            )
             _archive_call(
                 src=src,
                 engine=opt_obj.engine if opt_obj and opt_obj.engine else settings.ocr_engine_default,
                 w=w, h=h, stats_sink=stats_sink,
                 status="error", error=f"{type(exc).__name__}: {exc}",
             )
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
+            # JSONResponse (not HTTPException) so we can attach Retry-After.
+            return JSONResponse(
+                status_code=503,
+                content={"detail": f"{type(exc).__name__}: {exc}"},
+                headers={"Retry-After": "30"},
+            )
         logger.info(
             "/analyze sync %dx%d %s items=%d %.2fs",
             w, h, src, len(resp.items), time.perf_counter() - t_start,

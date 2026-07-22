@@ -297,7 +297,9 @@ def test_ensure_loaded_defaults_omit_cpu_threads_and_rec_batch(monkeypatch):
     defaults kick in (preserves the pre-tuning behavior).
     """
     spy = _install_paddleocr_spy(monkeypatch)
-    s = Settings()  # all defaults
+    # Explicit defaults — don't rely on Settings() reading .env (the local dev
+    # .env may have OCR_OCR_CPU_THREADS set, which would break this assertion).
+    s = Settings(ocr_cpu_threads=0, ocr_rec_batch_size=None)
 
     engine = OCREngine(s)
     engine._ensure_loaded()
@@ -308,3 +310,114 @@ def test_ensure_loaded_defaults_omit_cpu_threads_and_rec_batch(monkeypatch):
     # mkldnn is always forwarded (even at default True) — turning it off is a
     # documented debugging knob, so it's part of the contract.
     assert kws["enable_mkldnn"] is True
+
+
+# ---------------------------------------------------------------------------
+# Concurrency safety — predict() must serialize under _predict_lock
+# ---------------------------------------------------------------------------
+
+
+class _SlowFakeOCR:
+    """Fake OCR whose predict() sleeps briefly to force real concurrency.
+
+    Used by the concurrency test: a ThreadPoolExecutor dispatches N calls in
+    parallel; without the predict lock, they'd all interleave inside predict()
+    (mimicking PaddleOCR's thread-unsafe behavior). With the lock, they run
+    strictly serially — which is what we assert.
+    """
+
+    def __init__(self, result, predict_s: float = 0.05):
+        self._result = result
+        self._predict_s = predict_s
+        # Track whether two predict() calls ever overlapped. Each entry is
+        # (start, end) of one call; after the run we check no two intervals
+        # intersect — proof of serialization.
+        self.intervals: list[tuple[float, float]] = []
+        self._active_start: float | None = None
+
+    def predict(self, arr, **kwargs):
+        import time as _t
+        start = _t.perf_counter()
+        # Detect overlap with any in-flight call (should never happen with lock).
+        if self._active_start is not None:
+            raise RuntimeError(
+                "concurrent predict() detected — lock failed to serialize"
+            )
+        self._active_start = start
+        _t.sleep(self._predict_s)  # simulate a slow PaddleOCR call
+        end = _t.perf_counter()
+        self.intervals.append((self._active_start, end))
+        self._active_start = None
+        return [self._result]
+
+
+def test_concurrent_detect_and_recognize_serializes_predict(monkeypatch):
+    """N concurrent calls to detect_and_recognize must NOT interleave predict().
+
+    Mirrors the production failure: 6 simultaneous /analyze → 2 succeed, 4
+    crash because PaddleOCR.predict() isn't thread-safe. The _predict_lock
+    inside OCREngine makes concurrent calls queue instead of crashing.
+    """
+    import concurrent.futures as cf
+
+    result = _result(
+        rec_polys=[_quad(10, 10, 60, 40)],
+        rec_texts=["A"],
+        rec_scores=[0.9],
+        dt_polys=[_quad(10, 10, 60, 40)],
+    )
+    fake = _SlowFakeOCR(result, predict_s=0.05)
+
+    s = Settings()
+    engine = OCREngine(s)
+    engine._ocr = fake  # bypass _ensure_loaded / paddle import
+
+    # 4 threads x 3 calls each = 12 concurrent calls into the same engine.
+    N_THREADS, N_CALLS = 4, 3
+    with cf.ThreadPoolExecutor(max_workers=N_THREADS) as pool:
+        futures = [
+            pool.submit(engine.detect_and_recognize, _TILE)
+            for _ in range(N_THREADS * N_CALLS)
+        ]
+        results = [f.result() for f in futures]  # would raise if lock failed
+
+    # All calls succeeded and returned the expected single detection.
+    assert len(results) == N_THREADS * N_CALLS
+    for dets in results:
+        assert len(dets) == 1
+        assert dets[0].text == "A"
+
+    # No two predict() intervals overlap (proof of serialization). If the lock
+    # failed, _SlowFakeOCR would have raised mid-run; this is a second line of
+    # defense checking the recorded intervals.
+    intervals = sorted(fake.intervals)
+    for (s1, e1), (s2, e2) in zip(intervals, intervals[1:]):
+        assert s2 >= e1, f"predict() overlap detected: {s1}-{e1} vs {s2}-{e2}"
+
+    # Stats are atomically accumulated across the concurrent calls.
+    assert engine.ocr_stats["predict_calls"] == N_THREADS * N_CALLS
+
+
+def test_concurrent_calls_accumulate_stats_correctly(monkeypatch):
+    """Stats counters stay consistent under concurrent writes (lock-protected)."""
+    import concurrent.futures as cf
+
+    result = _result(
+        rec_polys=[_quad(10, 10, 60, 40), _quad(70, 10, 120, 40)],
+        rec_texts=["A", "B"],
+        rec_scores=[0.9, 0.8],
+        dt_polys=[_quad(10, 10, 60, 40), _quad(70, 10, 120, 40)],
+    )
+    fake = _SlowFakeOCR(result, predict_s=0.01)
+
+    engine = OCREngine(Settings())
+    engine._ocr = fake
+
+    N = 10
+    with cf.ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(lambda _: engine.detect_and_recognize(_TILE), range(N)))
+
+    s = engine.ocr_stats
+    assert s["predict_calls"] == N
+    assert s["boxes_detected"] == N * 2   # 2 dt_polys per call
+    assert s["boxes_recognized"] == N * 2  # 2 rec_polys per call
