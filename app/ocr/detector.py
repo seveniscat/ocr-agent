@@ -270,15 +270,29 @@ class OCREngine:
             "Loading PaddleOCR 3.7.0 (version=%s, lang=%s)…",
             s.ocr_version, s.ocr_lang,
         )
-        # Optional CPU-runtime overrides. Only forwarded when the user opted in
-        # via .env; defaults preserve PaddleOCR's own behavior (cpu_threads=10,
-        # rec batch=PaddleOCR default, mkldnn=True). See Settings.ocr_cpu_threads
-        # / ocr_rec_batch_size / ocr_enable_mkldnn docstrings for tuning advice.
+        # Optional runtime overrides. Only forwarded when the user opted in via
+        # .env; defaults preserve PaddleOCR's own behavior (cpu_threads=10, rec
+        # batch=PaddleOCR default, mkldnn=True, device auto-detected by Paddle).
+        # See Settings.ocr_cpu_threads / ocr_rec_batch_size / ocr_enable_mkldnn /
+        # device / use_fp16 docstrings for tuning advice.
         runtime_kwargs: dict[str, Any] = {"enable_mkldnn": s.ocr_enable_mkldnn}
         if s.ocr_cpu_threads and s.ocr_cpu_threads > 0:
             runtime_kwargs["cpu_threads"] = s.ocr_cpu_threads
         if s.ocr_rec_batch_size is not None:
             runtime_kwargs["text_recognition_batch_size"] = s.ocr_rec_batch_size
+        # device: 'auto' → omit the kwarg so Paddle auto-detects (GPU if the
+        # paddlepaddle-gpu build is installed, else CPU). 'gpu'/'cpu' forward
+        # verbatim. PaddleOCR's parse_common_args accepts device='gpu'/'cpu'/
+        # 'gpu:0'/'gpu:0,1' but NOT 'auto' — that's why we translate it here.
+        if s.device != "auto":
+            runtime_kwargs["device"] = s.device
+        # FP16 only takes effect on GPU via TensorRT (PaddleOCR silently ignores
+        # precision on CPU). Gate on device=='gpu' explicitly so 'auto' hosts
+        # don't accidentally trigger a TensorRT engine build when Paddle happens
+        # to pick a GPU — users who want FP16 under auto must set device='gpu'.
+        if s.use_fp16 and s.device == "gpu":
+            runtime_kwargs["precision"] = "fp16"
+            runtime_kwargs["use_tensorrt"] = True
         self._ocr = PaddleOCR(
             lang=s.ocr_lang,
             ocr_version=s.ocr_version,
@@ -298,12 +312,13 @@ class OCREngine:
         )
         logger.info(
             "PaddleOCR ready: version=%s lang=%s granularity=%s "
-            "det_thresh=%.2f unclip=%.1f cpu_threads=%s rec_batch=%s mkldnn=%s",
+            "det_thresh=%.2f unclip=%.1f device=%s cpu_threads=%s rec_batch=%s "
+            "mkldnn=%s fp16=%s",
             s.ocr_version, s.ocr_lang, s.ocr_granularity,
-            s.ocr_threshold, s.ocr_unclip_ratio,
+            s.ocr_threshold, s.ocr_unclip_ratio, s.device,
             s.ocr_cpu_threads or "default",
             s.ocr_rec_batch_size if s.ocr_rec_batch_size is not None else "default",
-            s.ocr_enable_mkldnn,
+            s.ocr_enable_mkldnn, s.use_fp16,
         )
 
     def detect_and_recognize(

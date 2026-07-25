@@ -312,6 +312,56 @@ def test_ensure_loaded_defaults_omit_cpu_threads_and_rec_batch(monkeypatch):
     assert kws["enable_mkldnn"] is True
 
 
+def test_ensure_loaded_forwards_device_and_fp16_on_gpu(monkeypatch):
+    """device='gpu' + use_fp16=True → PaddleOCR gets device/precision/use_tensorrt."""
+    _install_paddleocr_spy(monkeypatch)
+    # Explicit kwargs — don't let the local dev .env bleed in (see note above).
+    s = Settings(device="gpu", use_fp16=True)
+
+    engine = OCREngine(s)
+    engine._ensure_loaded()
+
+    kws = engine._ocr.kwargs
+    assert kws["device"] == "gpu"
+    assert kws["precision"] == "fp16"
+    assert kws["use_tensorrt"] is True
+
+
+def test_ensure_loaded_fp16_ignored_on_cpu(monkeypatch):
+    """use_fp16=True under device='cpu' must NOT forward precision/use_tensorrt.
+
+    PaddleOCR silently ignores precision on CPU, so we don't send it — keeps
+    the contract honest and avoids a confusing TensorRT mention in the kwargs.
+    """
+    _install_paddleocr_spy(monkeypatch)
+    s = Settings(device="cpu", use_fp16=True)
+
+    engine = OCREngine(s)
+    engine._ensure_loaded()
+
+    kws = engine._ocr.kwargs
+    assert kws["device"] == "cpu"
+    assert "precision" not in kws
+    assert "use_tensorrt" not in kws
+
+
+def test_ensure_loaded_auto_omits_device(monkeypatch):
+    """device='auto' must NOT pass `device` — PaddleOCR rejects 'auto' as a
+    value; the only way to get auto-detection is to omit the kwarg entirely."""
+    _install_paddleocr_spy(monkeypatch)
+    s = Settings(device="auto", use_fp16=True)
+
+    engine = OCREngine(s)
+    engine._ensure_loaded()
+
+    kws = engine._ocr.kwargs
+    assert "device" not in kws
+    # use_fp16 is gated on device=='gpu', so under 'auto' it's not forwarded
+    # either — users who want FP16 must explicitly opt into device='gpu'.
+    assert "precision" not in kws
+    assert "use_tensorrt" not in kws
+
+
 # ---------------------------------------------------------------------------
 # Concurrency safety — predict() must serialize under _predict_lock
 # ---------------------------------------------------------------------------

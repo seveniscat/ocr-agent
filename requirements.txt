@@ -18,8 +18,14 @@ opencv-python-headless>=4.9
 paddleocr>=3.7.0
 # paddlepaddle is a separate, heavy install. PaddleOCR 3.7.0 pins
 # paddlex>=3.7.0, which needs Paddle 3.x. Install matching to your platform:
-#   CPU:  pip install paddlepaddle>=3.0
-#   GPU:  pip install paddlepaddle-gpu>=3.0  (see https://www.paddlepaddle.org.cn/install/quick)
+#   CPU (default, any machine):
+#       pip install paddlepaddle>=3.0
+#   GPU (CUDA 12.x — RTX 30/40/50 series; 5-10x faster rec throughput):
+#       pip uninstall paddlepaddle
+#       pip install paddlepaddle-gpu==3.3.1 -i https://www.paddlepaddle.org.cn/packages/stable/cu126/
+#       pip install nvidia-cudnn-cu12==9.9.0.52   # match paddle's cuDNN 9.9 build
+#       then set OCR_DEVICE=gpu (or auto) + OCR_USE_FP16=true in .env.
+#       See docs/deploy-gpu.md for the full Windows/Linux + TensorRT setup.
 paddlepaddle>=3.0
 
 # Barcode / QR
