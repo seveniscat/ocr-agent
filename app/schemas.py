@@ -160,15 +160,37 @@ class TaskStatus(BaseModel):
     status: Literal["pending", "running", "done", "error"]
     result: Optional[AnalyzeResponse] = None
     error: Optional[str] = None
+    # Optional correlation fields for package-detection (and similar) orchestration.
+    # ``batch_no`` groups multiple per-face jobs; ``location`` is e.g. front@0.
+    batch_no: Optional[str] = None
+    location: Optional[str] = None
+    biz_id: Optional[str] = None
+    # Coarse progress for poll UIs: 0 pending, 10 accepted, 50 running, 100 terminal.
+    percent: int = Field(0, ge=0, le=100)
+
+
+class BatchStatus(BaseModel):
+    """Aggregated view of all OCR jobs under one ``batch_no``."""
+
+    batch_no: str
+    status: Literal["pending", "running", "done", "error", "partial"]
+    percent: int = Field(0, ge=0, le=100)
+    total: int = 0
+    done: int = 0
+    error: int = 0
+    running: int = 0
+    pending: int = 0
+    tasks: list[TaskStatus] = Field(default_factory=list)
 
 
 class WebhookPayload(BaseModel):
     """Outbound webhook body — a tiny status ping sent to a caller-supplied URL.
 
     Sent from ``/analyze`` when the request carries ``callback_url``. Carries
-    only status + task_id (+ the caller's ``biz_id``); the receiver pulls the
-    full OCR result via ``GET /tasks/{task_id}``. Constructed in
-    ``app/webhook.build_payload``; this model documents the wire contract.
+    only status + task_id (+ the caller's ``biz_id`` / ``batch_no`` / ``location``);
+    the receiver pulls the full OCR result via ``GET /tasks/{task_id}``.
+    Constructed in ``app/webhook.build_payload``; this model documents the wire
+    contract.
     """
 
     event: Literal["analyze.completed", "analyze.failed"]
@@ -176,6 +198,8 @@ class WebhookPayload(BaseModel):
     status: Literal["done", "error"]
     timestamp: str  # ISO-8601 UTC, e.g. "2026-06-24T12:34:56Z"
     biz_id: Optional[str] = None  # echoed verbatim from the request, when given
+    batch_no: Optional[str] = None
+    location: Optional[str] = None
     error: Optional[str] = None    # short message; only set on failure
 
 
