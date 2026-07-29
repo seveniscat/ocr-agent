@@ -2,8 +2,10 @@
 
 Endpoints:
 - ``POST /analyze``: multipart upload. Small images return synchronously;
-  large images return ``202`` with a ``task_id`` (polled via ``/tasks/{id}``).
-- ``GET  /tasks/{id}``: poll an async task.
+  large images / ``async_mode`` / package-batch jobs return ``202`` with a
+  ``task_id`` (polled via ``/tasks/{id}`` or ``/batches/{batch_no}``).
+- ``GET  /tasks/{id}``: poll a single OCR job.
+- ``GET  /batches/{batch_no}``: aggregate multi-face jobs under one batch.
 - ``POST /verify``: OCR the image, then check its text against a standard-copy
   list (deterministic rule-based; returns matched/partial/missing per entry).
 
@@ -42,6 +44,7 @@ from .log_buffer import (
 from .pipeline import Pipeline
 from .schemas import (
     AnalyzeResponse,
+    BatchStatus,
     CandidatesResponse,
     ComputePanelsRequest,
     ComputePanelsResponse,
@@ -129,6 +132,8 @@ if _STATIC_DIR.is_dir():
 
 # In-memory task store (v1; swap for Redis/DB in production).
 _tasks: dict[str, TaskStatus] = {}
+# batch_no → ordered list of task_ids (package-detection multi-face grouping).
+_batches: dict[str, list[str]] = {}
 
 
 @app.get("/", include_in_schema=False)
@@ -409,6 +414,100 @@ def save_vlm_config(body: VLMConfigUpdate) -> JSONResponse:
     )
 
 
+def _form_bool(v: str | bool | None, default: bool = False) -> bool:
+    """Parse multipart form bools (``"true"`` / ``"1"`` / ``true``)."""
+    if v is None:
+        return default
+    if isinstance(v, bool):
+        return v
+    s = str(v).strip().lower()
+    if s in ("", "0", "false", "no", "off", "n"):
+        return False
+    if s in ("1", "true", "yes", "on", "y"):
+        return True
+    return default
+
+
+def _normalize_optional_str(v: str | None) -> str | None:
+    if v is None:
+        return None
+    s = str(v).strip()
+    return s or None
+
+
+def _resolve_task_id(
+    task_id: str | None,
+    batch_no: str | None,
+    location: str | None,
+) -> str:
+    """Pick the OCR job id.
+
+    Priority:
+    1. explicit ``task_id`` from caller (package API may pass ``batch#location``)
+    2. ``{batch_no}::{location}`` when both correlation fields are present
+    3. random uuid (legacy / UI callers)
+    """
+    if task_id:
+        return task_id
+    if batch_no and location:
+        return f"{batch_no}::{location}"
+    return uuid.uuid4().hex
+
+
+def _register_batch_task(batch_no: str | None, task_id: str) -> None:
+    if not batch_no:
+        return
+    ids = _batches.setdefault(batch_no, [])
+    if task_id not in ids:
+        ids.append(task_id)
+
+
+def _set_task_progress(task_id: str, status: str, percent: int, **fields) -> None:
+    task = _tasks.get(task_id)
+    if task is None:
+        return
+    task.status = status  # type: ignore[assignment]
+    task.percent = percent
+    for k, v in fields.items():
+        setattr(task, k, v)
+
+
+def _aggregate_batch(batch_no: str) -> BatchStatus | None:
+    ids = _batches.get(batch_no)
+    if not ids:
+        return None
+    tasks = [_tasks[tid] for tid in ids if tid in _tasks]
+    if not tasks:
+        return None
+    counts = {"pending": 0, "running": 0, "done": 0, "error": 0}
+    for t in tasks:
+        counts[t.status] = counts.get(t.status, 0) + 1
+    total = len(tasks)
+    terminal = counts["done"] + counts["error"]
+    if terminal == 0 and counts["running"] == 0:
+        overall: str = "pending"
+    elif terminal < total:
+        overall = "running" if counts["running"] or counts["pending"] else "partial"
+    elif counts["error"] == 0:
+        overall = "done"
+    elif counts["done"] == 0:
+        overall = "error"
+    else:
+        overall = "partial"
+    percent = int(round(100 * terminal / total)) if total else 0
+    return BatchStatus(
+        batch_no=batch_no,
+        status=overall,  # type: ignore[arg-type]
+        percent=percent,
+        total=total,
+        done=counts["done"],
+        error=counts["error"],
+        running=counts["running"],
+        pending=counts["pending"],
+        tasks=tasks,
+    )
+
+
 @app.post("/analyze", response_model=AnalyzeResponse)
 async def analyze(
     background_tasks: BackgroundTasks,
@@ -424,8 +523,8 @@ async def analyze(
     callback_url: str | None = Form(
         None,
         description="Optional webhook URL. When set, the service POSTs a tiny "
-                    "status payload (event/task_id/status/biz_id/timestamp) here "
-                    "on completion or failure; the receiver then GETs "
+                    "status payload (event/task_id/status/biz_id/batch_no/location) "
+                    "here on completion or failure; the receiver then GETs "
                     "/tasks/{task_id} for the full result. Must be http(s).",
     ),
     callback_secret: str | None = Form(
@@ -437,7 +536,29 @@ async def analyze(
     biz_id: str | None = Form(
         None,
         description="Optional business id echoed verbatim in the webhook payload, "
-                    "so the receiver can correlate the callback to its own record.",
+                    "so the receiver can correlate the callback to its own record "
+                    "(e.g. check-record id).",
+    ),
+    task_id: str | None = Form(
+        None,
+        description="Optional external job id. When omitted, uses "
+                    "{batch_no}::{location} if both set, else a random uuid. "
+                    "Package detection can pass batch_no#location as task_id.",
+    ),
+    batch_no: str | None = Form(
+        None,
+        description="Optional package-detection batch id. Groups multi-face jobs "
+                    "for GET /batches/{batch_no}.",
+    ),
+    location: str | None = Form(
+        None,
+        description="Optional face slot for package detection, e.g. front or front@1.",
+    ),
+    async_mode: str | None = Form(
+        None,
+        description="When true/1/yes, always accept as async (HTTP 202) even for "
+                    "small images — required for browser-leave-safe package jobs. "
+                    "Also forced when batch_no is set.",
     ),
 ) -> JSONResponse:
     settings = _settings()
@@ -445,6 +566,12 @@ async def analyze(
     # is a clean 400, not a job that runs and then fails to notify.
     if callback_url:
         _validate_callback_url(callback_url)
+
+    biz_id = _normalize_optional_str(biz_id)
+    batch_no = _normalize_optional_str(batch_no)
+    location = _normalize_optional_str(location)
+    task_id = _normalize_optional_str(task_id)
+    force_async = _form_bool(async_mode, False) or bool(batch_no)
 
     # source label for logs: which input path the caller used.
     src = f"url={url}" if url else (f"file={file.filename}" if file else "none")
@@ -454,16 +581,16 @@ async def analyze(
     # Parse optional OCR overrides.
     opt_obj = _parse_options(options)
 
-    # Size gate: large images go async.
+    # Size gate: large images go async; package batch / async_mode always async.
     from .tiling import image_size
 
     w, h = image_size(data)
     long_edge = max(w, h)
+    use_async = force_async or long_edge > settings.large_image_threshold
 
-    if long_edge <= settings.large_image_threshold:
-        # Synchronous path (small/medium images). Run in the thread pool so the
-        # (synchronous, CPU-heavy) pipeline.run() doesn't block the event loop
-        # either — even "small" images can take a couple seconds.
+    if not use_async:
+        # Synchronous path (small/medium images, non-package). Run in the thread
+        # pool so pipeline.run() doesn't block the event loop.
         pipeline = _get_pipeline()
         loop = asyncio.get_event_loop()
         stats_sink: dict = {}
@@ -528,73 +655,101 @@ async def analyze(
         # so backfilling it is fully backward compatible (it stays None when no
         # callback is requested — the common, inline-return case is unchanged).
         if callback_url:
-            sync_task_id = uuid.uuid4().hex
+            sync_task_id = _resolve_task_id(task_id, batch_no, location)
             resp.task_id = sync_task_id
             _tasks[sync_task_id] = TaskStatus(
-                task_id=sync_task_id, status="done", result=resp
+                task_id=sync_task_id,
+                status="done",
+                result=resp,
+                batch_no=batch_no,
+                location=location,
+                biz_id=biz_id,
+                percent=100,
             )
+            _register_batch_task(batch_no, sync_task_id)
             _fire_webhook(
                 sync_task_id, "done",
                 callback_url=callback_url,
                 callback_secret=callback_secret,
                 biz_id=biz_id,
+                batch_no=batch_no,
+                location=location,
             )
         return JSONResponse(status_code=200, content=resp.model_dump())
 
-    # Async path (large images). Offload to the thread pool — NOT
-    # BackgroundTasks — so the event loop stays free to answer /tasks polls
-    # while OCR grinds. The 202 + task_id contract is unchanged.
-    task_id = uuid.uuid4().hex
-    _tasks[task_id] = TaskStatus(task_id=task_id, status="pending")
+    # Async path (large images / package batch / async_mode). Offload to the
+    # thread pool — NOT BackgroundTasks — so the event loop stays free to
+    # answer /tasks and /batches polls while OCR grinds.
+    resolved_id = _resolve_task_id(task_id, batch_no, location)
+    existing = _tasks.get(resolved_id)
+    if existing is not None and existing.status in ("pending", "running"):
+        raise HTTPException(
+            status_code=409,
+            detail=f"task_id already in progress: {resolved_id}",
+        )
+
+    _tasks[resolved_id] = TaskStatus(
+        task_id=resolved_id,
+        status="pending",
+        batch_no=batch_no,
+        location=location,
+        biz_id=biz_id,
+        percent=10,
+    )
+    _register_batch_task(batch_no, resolved_id)
 
     def _run():
         t = time.perf_counter()
         stats_sink: dict = {}
         try:
-            _tasks[task_id].status = "running"
+            _set_task_progress(resolved_id, "running", 50)
             pipeline = _get_pipeline()
             resp = pipeline.run(
                 data, annotate=annotate, options=opt_obj, image_url=url,
                 stats_sink=stats_sink,
             )
-            _tasks[task_id].result = resp
-            _tasks[task_id].status = "done"
+            resp.task_id = resolved_id
+            _set_task_progress(resolved_id, "done", 100, result=resp, error=None)
             logger.info(
-                "/analyze async task=%s %dx%d %s items=%d done in %.2fs",
-                task_id, w, h, src, len(resp.items), time.perf_counter() - t,
+                "/analyze async task=%s batch=%s loc=%s %dx%d %s items=%d done in %.2fs",
+                resolved_id, batch_no, location, w, h, src, len(resp.items),
+                time.perf_counter() - t,
             )
             _archive_call(
                 src=src,
                 engine=opt_obj.engine if opt_obj and opt_obj.engine else settings.ocr_engine_default,
-                w=w, h=h, stats_sink=stats_sink, task_id=task_id,
+                w=w, h=h, stats_sink=stats_sink, task_id=resolved_id,
             )
             _fire_webhook(
-                task_id, "done",
+                resolved_id, "done",
                 callback_url=callback_url,
                 callback_secret=callback_secret,
                 biz_id=biz_id,
+                batch_no=batch_no,
+                location=location,
             )
         except Exception as exc:  # noqa: BLE001 — surface to caller
             err = f"{type(exc).__name__}: {exc}"
-            _tasks[task_id].status = "error"
-            _tasks[task_id].error = err
+            _set_task_progress(resolved_id, "error", 100, error=err)
             logger.warning(
                 "/analyze async task=%s failed in %.2fs: %s",
-                task_id, time.perf_counter() - t, exc,
+                resolved_id, time.perf_counter() - t, exc,
             )
             _archive_call(
                 src=src,
                 engine=opt_obj.engine if opt_obj and opt_obj.engine else settings.ocr_engine_default,
-                w=w, h=h, stats_sink=stats_sink, task_id=task_id,
+                w=w, h=h, stats_sink=stats_sink, task_id=resolved_id,
                 status="error", error=err,
             )
             # Notify on failure too — the receiver otherwise can't tell a slow
             # job from a dead one and would poll forever.
             _fire_webhook(
-                task_id, "error",
+                resolved_id, "error",
                 callback_url=callback_url,
                 callback_secret=callback_secret,
                 biz_id=biz_id,
+                batch_no=batch_no,
+                location=location,
                 error=err,
             )
 
@@ -602,8 +757,8 @@ async def analyze(
     loop = asyncio.get_event_loop()
     loop.run_in_executor(_ocr_executor, _run)
     logger.info(
-        "/analyze async accepted task=%s %dx%d %s",
-        task_id, w, h, src,
+        "/analyze async accepted task=%s batch=%s loc=%s %dx%d %s",
+        resolved_id, batch_no, location, w, h, src,
     )
     return JSONResponse(
         status_code=202,
@@ -611,7 +766,7 @@ async def analyze(
             image_meta={"width": w, "height": h, "tile_count": 0},
             items=[],
             options_used=opt_obj,
-            task_id=task_id,
+            task_id=resolved_id,
         ).model_dump(),
     )
 
@@ -660,6 +815,8 @@ def _fire_webhook(
     callback_secret: str | None,
     biz_id: str | None,
     error: str | None = None,
+    batch_no: str | None = None,
+    location: str | None = None,
 ) -> None:
     """Enqueue an outbound webhook delivery — fire-and-forget.
 
@@ -679,6 +836,8 @@ def _fire_webhook(
         callback_url,
         callback_secret,
         error,
+        batch_no=batch_no,
+        location=location,
     )
 
 
@@ -688,6 +847,20 @@ def get_task(task_id: str) -> JSONResponse:
     if task is None:
         return JSONResponse(status_code=404, content={"detail": "task not found"})
     return JSONResponse(status_code=200, content=task.model_dump())
+
+
+@app.get("/batches/{batch_no}", response_model=BatchStatus, tags=["tasks"])
+def get_batch(batch_no: str) -> JSONResponse:
+    """Aggregate status of all OCR jobs registered under ``batch_no``.
+
+    Package detection submits one ``/analyze`` per face with the same
+    ``batch_no``; the business API (or frontend) polls this endpoint until
+    ``status`` is ``done`` / ``error`` / ``partial``.
+    """
+    batch = _aggregate_batch(batch_no)
+    if batch is None:
+        return JSONResponse(status_code=404, content={"detail": "batch not found"})
+    return JSONResponse(status_code=200, content=batch.model_dump())
 
 
 @app.post("/understand", response_model=UnderstandingResult)

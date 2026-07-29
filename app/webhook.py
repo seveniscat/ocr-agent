@@ -47,6 +47,8 @@ def build_payload(
     biz_id: Optional[str] = None,
     error: Optional[str] = None,
     *,
+    batch_no: Optional[str] = None,
+    location: Optional[str] = None,
     now: Optional[float] = None,
 ) -> dict:
     """Construct the outbound webhook body.
@@ -57,11 +59,12 @@ def build_payload(
         biz_id: Optional caller-supplied business id, echoed verbatim so the
             receiver can correlate the callback to its own order/record.
         error: Short error string; only set on failure.
+        batch_no: Optional package-detection batch id (groups multi-face jobs).
+        location: Optional face slot, e.g. ``front@0``.
         now: Override for ``time.time()`` (tests only).
 
-    The body is deliberately tiny and always has the same keys (``error`` /
-    ``biz_id`` omitted only when empty), so receivers can deserialize into a
-    fixed schema without conditional parsing.
+    The body is deliberately tiny; optional keys are omitted when empty so
+    receivers can deserialize without requiring every field.
     """
     event = "analyze.completed" if status == "done" else "analyze.failed"
     ts = datetime.fromtimestamp(now if now is not None else time.time(), tz=timezone.utc)
@@ -73,6 +76,10 @@ def build_payload(
     }
     if biz_id:
         payload["biz_id"] = biz_id
+    if batch_no:
+        payload["batch_no"] = batch_no
+    if location:
+        payload["location"] = location
     if error:
         payload["error"] = error
     return payload
@@ -98,6 +105,8 @@ def deliver(
     secret: Optional[str],
     error: Optional[str] = None,
     *,
+    batch_no: Optional[str] = None,
+    location: Optional[str] = None,
     timeout: float = DEFAULT_TIMEOUT,
 ) -> None:
     """POST the status payload to ``callback_url``. Never raises.
@@ -107,7 +116,16 @@ def deliver(
     it has already succeeded (or already recorded its own error), so a callback
     delivery problem must not propagate.
     """
-    body = json.dumps(build_payload(task_id, status, biz_id, error)).encode("utf-8")
+    body = json.dumps(
+        build_payload(
+            task_id,
+            status,
+            biz_id,
+            error,
+            batch_no=batch_no,
+            location=location,
+        )
+    ).encode("utf-8")
     headers = {"Content-Type": "application/json"}
     if secret:
         headers["X-Webhook-Signature"] = sign(body, secret)

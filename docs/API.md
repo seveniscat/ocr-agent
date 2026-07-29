@@ -51,21 +51,28 @@ curl -F "url=http://内网图床/sample.png" http://10.1.93.196:8000/analyze
 
 ### 2.3 同步与异步
 
-| 图片长边 | 处理方式 | HTTP 响应 |
-|----------|----------|-----------|
-| ≤ 4000px | **同步** | `200` + 完整结果(直接在响应体) |
-| > 4000px | **异步** | `202` + `task_id`(需轮询取结果) |
+| 条件 | 处理方式 | HTTP 响应 |
+|------|----------|-----------|
+| 长边 ≤ 4000px，且未强制异步 | **同步** | `200` + 完整结果 |
+| 长边 > 4000px，或 `async_mode=true`，或传了 `batch_no` | **异步** | `202` + `task_id` |
+
+包装检测建议：**始终带 `batch_no` + `location` + `callback_url`**（传 `batch_no` 即强制异步，关页不影响任务）。
 
 异步取结果:
 
 ```bash
 # 第一步:发起,拿到 task_id
-curl -F "url=http://..." http://10.1.93.196:8000/analyze
-# → {"task_id":"f32332e8...","image_meta":{...},"items":[]}
+curl -F "url=http://..." \
+  -F "batch_no=img42-1710000000000-abc" \
+  -F "location=front@0" \
+  -F "callback_url=http://api-host/internal/ocr/callback" \
+  http://10.1.93.196:8000/analyze
+# → 202 {"task_id":"img42-...::front@0","image_meta":{...},"items":[]}
 
-# 第二步:轮询(间隔 5 秒),直到 status=done
-curl http://10.1.93.196:8000/tasks/f32332e8...
-# status: pending → running → done(result 字段即最终结果)
+# 第二步:轮询单任务 或 整批次
+curl http://10.1.93.196:8000/tasks/img42-...::front@0
+curl http://10.1.93.196:8000/batches/img42-1710000000000-abc
+# status: pending → running → done / error / partial
 ```
 
 ---
@@ -83,6 +90,13 @@ curl http://10.1.93.196:8000/tasks/f32332e8...
 | `file` / `url` | form | 二选一 | 图片输入(见 2.1) |
 | `options` | form | 否 | OCR 参数覆盖,JSON 字符串(见下表) |
 | `annotate` | query | 否 | `true` 时返回带标注框的图片(base64) |
+| `task_id` | form | 否 | 外部任务 ID；省略时若有 `batch_no`+`location` 则用 `{batch_no}::{location}`，否则随机 uuid |
+| `batch_no` | form | 否 | 包装检测批次号；**有值则强制异步**，并计入 `GET /batches/{batch_no}` |
+| `location` | form | 否 | 包装面槽位，如 `front` / `front@1` |
+| `async_mode` | form | 否 | `true`/`1` 时强制异步（小图也 `202`） |
+| `callback_url` | form | 否 | 完成后 POST 状态回调（业务 API 地址）；结果仍用 `GET /tasks/{id}` 拉取 |
+| `callback_secret` | form | 否 | 回调 HMAC-SHA256 密钥 |
+| `biz_id` | form | 否 | 业务侧 id（如 check_record id），原样回传回调 |
 
 **`options` 可用字段**(JSON 字符串,所有字段可选,省略则用服务端默认值):
 
@@ -256,13 +270,53 @@ curl -F "url=http://内网图床/a.png" \
 
 ### 3.6 `GET /tasks/{task_id}` —— 查询异步任务
 
-查询 `/analyze` 异步任务的状态(见 2.3)。
+查询 `/analyze` 单图任务的状态(见 2.3)。
 
 ```bash
 curl http://10.1.93.196:8000/tasks/{task_id}
-# {"task_id":"...","status":"done","result":{...}}
-# status: pending → running → done / error
+# {
+#   "task_id":"...",
+#   "status":"done",          // pending | running | done | error
+#   "percent": 100,           // 0~100
+#   "batch_no": "img42-...",
+#   "location": "front@0",
+#   "biz_id": "12345",
+#   "result": { "items": [...] },
+#   "error": null
+# }
 ```
+
+### 3.6.1 `GET /batches/{batch_no}` —— 查询检测批次进度
+
+同一 `batch_no` 下多面 `/analyze` 的聚合视图（包装检测用）。
+
+```bash
+curl http://10.1.93.196:8000/batches/{batch_no}
+# {
+#   "batch_no": "img42-...",
+#   "status": "running",   // pending | running | done | error | partial
+#   "percent": 50,
+#   "total": 6, "done": 3, "error": 0, "running": 2, "pending": 1,
+#   "tasks": [ /* TaskStatus 列表 */ ]
+# }
+```
+
+### 3.6.2 回调 `callback_url` 载荷
+
+```jsonc
+{
+  "event": "analyze.completed",   // 或 analyze.failed
+  "task_id": "img42-...::front@0",
+  "status": "done",               // done | error
+  "timestamp": "2026-07-24T12:00:00Z",
+  "biz_id": "12345",              // 有则带
+  "batch_no": "img42-...",
+  "location": "front@0",
+  "error": null                   // 失败时有值
+}
+```
+
+业务 API 收到后：`GET /tasks/{task_id}` 取 `result.items`，再写/更新 check record。
 
 ---
 
