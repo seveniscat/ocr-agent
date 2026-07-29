@@ -122,7 +122,12 @@ class VLMProvider(abc.ABC):
         # Strip a leading/trailing quote the model sometimes adds.
         import re
         text = re.sub(r"^['\"]|['\"]$", "", text)
-        return text, 0.8
+        # The self-rating prompt appends "||<score>"; parse it into a real
+        # confidence. Idempotent for prompts that don't ask for a score (no
+        # "||" present → falls back to 0.8, unchanged behavior).
+        from .qwen import _parse_self_rated
+        text, score = _parse_self_rated(text)
+        return text, score
 
     def recognize_crops_with_prompts_batch(
         self,

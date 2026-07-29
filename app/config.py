@@ -161,6 +161,17 @@ class Settings(BaseSettings):
                     "are kept. Applied on POST /analyze only (/verify keeps all boxes). "
                     "Must be ≤ rec_confidence_fallback.",
     )
+    rec_confidence_vlm_drop: float = Field(
+        0.85, ge=0.0, le=1.0,
+        description="[/analyze] Independent from rec_confidence_drop. A text box that "
+                    "was SENT to the VLM fallback but whose confidence was NOT lifted "
+                    "(vlm_lifted=False: new_conf <= original, or the VLM returned empty), "
+                    "AND whose final confidence is still below this, is discarded. "
+                    "Default 0.85 — a box the VLM looked at but couldn't improve, "
+                    "sitting in [0.60, 0.85), is dropped. Boxes the VLM lifted, or that "
+                    "never went through the VLM, are unaffected by this rule. /analyze "
+                    "only; qr/barcode always kept.",
+    )
 
     # ---- Circular / ring-shaped text detection (hard region for line OCR) ----
     # Characters arranged on an arc (around logos, seals, badges, caps) break the

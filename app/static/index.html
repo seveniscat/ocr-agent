@@ -624,6 +624,11 @@
         <input type="number" id="cfg_rec_confidence_drop" min="0" max="1" step="0.01" placeholder="0.60">
         <div class="hint">默认 0.60；与重认阈值配合：[丢弃, 重认) 区间走 VLM 重认，&lt;丢弃 则从结果移除（仅文本框，二维码/条码不受影响）</div>
       </div>
+      <div class="field" style="padding:2px 0 0; margin-left:2px">
+        <label>VLM 未提升丢弃阈值（送过 VLM 但置信度没提高、且低于此值的文字框也丢弃，0–1）</label>
+        <input type="number" id="cfg_rec_confidence_vlm_drop" min="0" max="1" step="0.01" placeholder="0.85">
+        <div class="hint">默认 0.85；独立于上面那条规则：VLM 看过却没能提升、置信度落在 [0.60, 0.85) 的文字框也会被丢弃。被 VLM 提升过、或没经过 VLM 的框不受此规则影响（仅 /analyze，仅文本框）</div>
+      </div>
 
       <div class="master-switch" style="margin-top:8px">
         <div>
@@ -1364,6 +1369,7 @@ function applyVlmConfig(d) {
   $('cfg_vlm_ocr_fallback').checked = !!d.vlm_ocr_fallback_enabled;
   $('cfg_rec_confidence_fallback').value = d.rec_confidence_fallback ?? '';
   $('cfg_rec_confidence_drop').value = d.rec_confidence_drop ?? '';
+  $('cfg_rec_confidence_vlm_drop').value = d.rec_confidence_vlm_drop ?? '';
   $('cfg_vlm_ocr_enabled').checked = !!d.vlm_ocr_enabled;
   $('cfg_vlm_ocr_model').value = d.vlm_ocr_model || '';
   $('cfg_understand').checked = !!d.understand_enabled;
@@ -1412,6 +1418,12 @@ async function saveVlmConfig() {
     })(),
     rec_confidence_drop: (() => {
       const v = $('cfg_rec_confidence_drop').value.trim();
+      if (v === '') return null;          // empty → keep stored value
+      const n = Number(v);
+      return Number.isFinite(n) ? n : null;
+    })(),
+    rec_confidence_vlm_drop: (() => {
+      const v = $('cfg_rec_confidence_vlm_drop').value.trim();
       if (v === '') return null;          // empty → keep stored value
       const n = Number(v);
       return Number.isFinite(n) ? n : null;

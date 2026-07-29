@@ -88,7 +88,8 @@ class LogRecord:
 
     # --- confidence drop policy (/analyze only) ------------------------
     dropped: int = 0                # text boxes dropped for low confidence
-    drop_threshold: float = 0.0     # rec_confidence_drop used this run
+    drop_threshold: float = 0.0     # rec_confidence_drop used this run (rule 1)
+    vlm_drop_threshold: float = 0.0  # rec_confidence_vlm_drop used this run (rule 2)
 
 
 _BUFFER: "deque[LogRecord]" = deque(maxlen=CAPACITY)

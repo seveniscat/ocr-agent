@@ -204,7 +204,7 @@ _SINK_FIELDS = (
     "ocr_predict_calls", "ocr_boxes_detected", "ocr_boxes_recognized",
     "vlm_crops", "vlm_sent", "vlm_rescued", "vlm_empty",
     "vlm_suspects", "vlm_rings", "fallback_threshold", "fallback_crops",
-    "dropped", "drop_threshold",
+    "dropped", "drop_threshold", "vlm_drop_threshold",
 )
 
 
@@ -229,6 +229,7 @@ def _archive_call(
     _SINK_DEFAULTS = {
         "fallback_threshold": 0.0,
         "drop_threshold": 0.0,
+        "vlm_drop_threshold": 0.0,
         "fallback_crops": [],
     }
     kwargs = {k: stats_sink.get(k, _SINK_DEFAULTS.get(k, 0)) for k in _SINK_FIELDS}
@@ -305,6 +306,9 @@ class VLMConfigUpdate(BaseModel):
     # Confidence below which a text box is DROPPED from /analyze results (after
     # the VLM fallback). Default 0.60. Must be ≤ rec_confidence_fallback.
     rec_confidence_drop: float | None = None
+    # Independent rule-2 threshold: a text box sent to the VLM but NOT lifted,
+    # with final confidence below this, is also dropped. Default 0.85.
+    rec_confidence_vlm_drop: float | None = None
 
 
 def _vlm_config_payload(s: "Settings") -> dict:
@@ -325,6 +329,7 @@ def _vlm_config_payload(s: "Settings") -> dict:
         "enable_thinking": s.vlm_enable_thinking,
         "rec_confidence_fallback": s.rec_confidence_fallback,
         "rec_confidence_drop": s.rec_confidence_drop,
+        "rec_confidence_vlm_drop": s.rec_confidence_vlm_drop,
     }
 
 
@@ -366,6 +371,10 @@ def save_vlm_config(body: VLMConfigUpdate) -> JSONResponse:
     if body.rec_confidence_drop is not None:
         writes.append(
             ("OCR_REC_CONFIDENCE_DROP", str(body.rec_confidence_drop))
+        )
+    if body.rec_confidence_vlm_drop is not None:
+        writes.append(
+            ("OCR_REC_CONFIDENCE_VLM_DROP", str(body.rec_confidence_vlm_drop))
         )
     if body.vlm_ocr_enabled is not None:
         writes.append(

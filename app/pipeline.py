@@ -259,16 +259,18 @@ class Pipeline:
         # because it needs every OCR'd character to match standard copy. ---
         n_dropped = 0
         drop_threshold_used = 0.0
+        vlm_drop_threshold_used = 0.0
         if confidence_policy:
             n_before_drop = len(all_items)
             all_items = self._drop_low_confidence(all_items)
             n_dropped = n_before_drop - len(all_items)
             # Mirror the clamp in _drop_low_confidence so the UI shows the
-            # actually-applied threshold (not the raw setting).
+            # actually-applied thresholds (not the raw settings).
             drop_threshold_used = min(
                 self.settings.rec_confidence_drop,
                 self.settings.rec_confidence_fallback,
             )
+            vlm_drop_threshold_used = self.settings.rec_confidence_vlm_drop
 
         all_items = renumber(all_items, prefix="t")
         t_dedup = time.perf_counter() - t_dedup
@@ -338,6 +340,7 @@ class Pipeline:
                 "fallback_crops": vlm_stats.get("crops", []),
                 "dropped": n_dropped,
                 "drop_threshold": drop_threshold_used,
+                "vlm_drop_threshold": vlm_drop_threshold_used,
             })
 
         return response
@@ -588,16 +591,26 @@ class Pipeline:
             it = out[idx]
             if new_text:
                 n_rescued += 1
+                # vlm_lifted: did the VLM actually beat the original PaddleOCR
+                # score? max() below keeps the higher value, but the /analyze
+                # confidence policy needs to know whether the VLM *improved*
+                # this box (True) or just agreed with a low score (False).
+                lifted = new_conf > it.confidence
                 out[idx] = it.model_copy(
                     update={
                         "text": new_text,
                         "confidence": max(it.confidence, new_conf),
                         "source": "vlm_fallback",
+                        "vlm_lifted": lifted,
                     }
                 )
                 outcome = "rescued"
             else:
                 n_empty += 1
+                # VLM returned empty: flag as "went through VLM but not lifted"
+                # so the /analyze rule-2 drop policy can catch it. Don't touch
+                # text/confidence/source — keep the original PaddleOCR values.
+                out[idx] = it.model_copy(update={"vlm_lifted": False})
                 outcome = "empty"
             crop_details.append({
                 "kind": "suspect",
@@ -658,32 +671,48 @@ class Pipeline:
         }
 
     def _drop_low_confidence(self, items: list[Item]) -> list[Item]:
-        """Discard text items whose final confidence is below rec_confidence_drop.
+        """Discard text items per the /analyze confidence policy.
 
-        Called only on the POST /analyze path (``confidence_policy=True``). Runs
-        AFTER the VLM fallback pass, so a box the VLM rescued above the drop
-        threshold survives; one that stayed low (either never sent or VLM-empty)
-        is removed. Only ``type == "text"`` items are dropped — qr/barcode
-        confidence has different semantics and those decoded payloads are
-        valuable regardless of score.
+        Called only on the POST /analyze path (``confidence_policy=True``).
+        Runs AFTER the VLM fallback pass. Two independent rules — either
+        triggers a drop:
 
-        The drop threshold is clamped to ``rec_confidence_fallback`` so a
-        misconfiguration (drop > fallback) can't silently widen the re-read set.
+        1. FINAL confidence < ``rec_confidence_drop`` (default 0.60), regardless
+           of VLM involvement.
+        2. Sent to the VLM but NOT lifted (``vlm_lifted is False``: new_conf
+           <= original, or the VLM returned empty), AND final confidence <
+           ``rec_confidence_vlm_drop`` (default 0.85). Catches boxes the VLM
+           looked at and couldn't improve — a weaker signal than one it never
+           needed to look at.
+
+        Only ``type == "text"`` items are dropped — qr/barcode confidence has
+        different semantics and those decoded payloads are valuable regardless
+        of score.
+
+        The rule-1 drop threshold is clamped to ``rec_confidence_fallback`` so
+        a misconfiguration (drop > fallback) can't silently widen the re-read
+        set.
         """
         drop = min(
             self.settings.rec_confidence_drop,
             self.settings.rec_confidence_fallback,
         )
+        vlm_drop = self.settings.rec_confidence_vlm_drop
         kept = [
             it for it in items
-            if it.type != "text" or it.confidence >= drop
+            if it.type != "text"
+            or (
+                it.confidence >= drop
+                and not (it.vlm_lifted is False and it.confidence < vlm_drop)
+            )
         ]
         n_drop = len(items) - len(kept)
         if n_drop:
             logger.info(
                 "confidence policy: dropped %d/%d text items "
-                "(confidence < %.2f; kept qr/barcode)",
-                n_drop, len(items), drop,
+                "(rule1 conf<%.2f OR rule2 vlm-not-lifted & conf<%.2f; "
+                "kept qr/barcode)",
+                n_drop, len(items), drop, vlm_drop,
             )
         return kept
 

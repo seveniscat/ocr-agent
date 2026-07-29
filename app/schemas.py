@@ -132,6 +132,15 @@ class Item(BaseModel):
     # boxes when emit_crops is enabled (so callers can pipe it straight to an
     # external recognizer without re-cropping the source image).
     crop_b64: Optional[str] = None
+    # None  = this box was never sent to the VLM fallback (PaddleOCR high-conf,
+    #         qr/barcode, ring members, etc.).
+    # True  = sent to the VLM AND its confidence was lifted above the original
+    #         PaddleOCR score (new_conf > original).
+    # False = sent to the VLM but NOT lifted (new_conf <= original, or the VLM
+    #         returned empty text). Used by the /analyze confidence policy:
+    #         a box the VLM looked at but couldn't improve is a weaker signal
+    #         than one it never needed to look at.
+    vlm_lifted: Optional[bool] = None
 
 
 class ImageMeta(BaseModel):

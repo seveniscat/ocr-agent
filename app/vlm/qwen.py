@@ -18,9 +18,43 @@ logger = logging.getLogger(__name__)
 
 _PROMPT = (
     "Read out the text visible in this image, exactly as written. "
-    "Output ONLY the recognized text, no commentary, no quotes. "
+    "Output the recognized text followed by '||' and your confidence "
+    "score (0.0-1.0) that the text is correct. "
+    "Format: <text>||<score>  (e.g. 12345||0.95). "
+    "No quotes, no commentary. "
     "If the image contains no readable text, output the single word: EMPTY"
 )
+
+# Separator between text and the model's self-rated confidence score.
+_CONF_SEP = "||"
+# Fallback confidence when the model doesn't emit the expected "||score" suffix.
+# Kept high enough to survive rec_confidence_drop (0.60) so a format regression
+# never silently drops a valid read, but not 1.0 — it's an unknown, not a sure.
+_FALLBACK_CONF = 0.8
+
+
+def _parse_self_rated(text: str) -> tuple[str, float]:
+    """Split a ``text||confidence`` VLM response into ``(clean_text, score)``.
+
+    The fallback prompt asks the model to append ``||<0-1>`` to its read. When
+    it does, we return the score (clamped to [0, 1]). When it doesn't follow
+    the format — or the score is malformed / out of range — we fall back to
+    ``_FALLBACK_CONF`` (0.8), matching the pre-change behavior so a format
+    regression can't quietly filter out good results.
+
+    ``rpartition`` is used so a text body that itself contains ``||`` keeps its
+    earlier occurrences (only the final ``||<score>`` is split off).
+    """
+    if _CONF_SEP in text:
+        body, _, tail = text.rpartition(_CONF_SEP)
+        body = body.strip()
+        try:
+            score = float(tail.strip())
+            if 0.0 <= score <= 1.0:
+                return body, score
+        except ValueError:
+            pass
+    return text, _FALLBACK_CONF
 
 
 class QwenVLM(VLMProvider):
@@ -62,11 +96,12 @@ class QwenVLM(VLMProvider):
         text = text.strip()
         if not text or text.upper() == "EMPTY":
             return "", 0.0
-        # No native score; we model confidence as 1 - (len/pixels heuristic) is
-        # unreliable, so we return a flat-but-high value (the VLM only fires when
-        # PaddleOCR was already unsure — winning by having *any* read beats none).
+        # The self-rating prompt appends "||<score>"; parse it into a real
+        # confidence. Falls back to _FALLBACK_CONF (0.8) if the model didn't
+        # follow the format — same behavior as before this change.
+        text, score = _parse_self_rated(text)
         text = re.sub(r"^['\"]|['\"]$", "", text)
-        return text, 0.8
+        return text, score
 
     # NOTE: recognize_crops_batch is inherited from VLMProvider, which dispatches
     # the per-crop calls across a thread pool (concurrency) rather than packing
@@ -100,9 +135,12 @@ class QwenVLM(VLMProvider):
         tolerant JSON parser instead. Defaults to the provider's setting
         (``self._enable_thinking``) when ``None``.
 
-        Confidence is a flat 0.8 heuristic: Qwen-VL gives no native score, so
-        callers should rely on downstream validation (did the JSON parse?) as
-        the real quality signal.
+        Confidence is a flat 0.8 placeholder: Qwen-VL gives no native score, so
+        this method returns a constant. Callers that need a real score use the
+        self-rating prompt (``_PROMPT``) and :func:`_parse_self_rated` via
+        ``recognize_crop`` / ``recognize_crop_with_prompt``, which parse a
+        ``text||score`` response. Every current ``ask_image`` caller discards
+        the returned confidence (``_conf``), so the placeholder is harmless.
         """
         want_thinking = (
             self._enable_thinking if enable_thinking is None else enable_thinking
