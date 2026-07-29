@@ -25,6 +25,7 @@ so ``import app.main`` stays fast and tests can mock the engine.
 from __future__ import annotations
 
 import logging
+import threading
 from dataclasses import dataclass
 from typing import Any
 
@@ -220,9 +221,22 @@ class OCREngine:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self._ocr: Any = None
+        # PaddleOCR.predict() is NOT thread-safe: two concurrent calls on the
+        # same instance corrupt PaddlePaddle's internal state, after which
+        # every subsequent predict() raises. The Pipeline is a process-wide
+        # singleton shared by the OCR thread pool, so without this lock the
+        # 2nd concurrent request poisons the engine and the 3rd+ all fail
+        # with 503 (observed in production: 6 simultaneous /analyze → first
+        # 2 succeed, next 4 all 503). Serializing predict() makes concurrent
+        # requests queue on the lock instead of crashing the engine. The
+        # engine is the bottleneck anyway (CPU-bound), so this costs nothing
+        # in throughput — it just trades random 503s for predictable waits.
+        self._predict_lock = threading.Lock()
         # Cumulative OCR stats since engine load. Reset by the caller (pipeline)
         # at the start of each request so the numbers reflect one run. Read via
-        # the `.ocr_stats` property after the OCR stage.
+        # the `.ocr_stats` property after the OCR stage. Guarded by
+        # `_predict_lock` since they're updated from inside the predict critical
+        # section and read from the request thread.
         self._stats = {
             "predict_calls": 0,   # number of predict() invocations (= tile count)
             "boxes_detected": 0,  # detector output (dt_polys), includes rec-dropped
@@ -256,15 +270,29 @@ class OCREngine:
             "Loading PaddleOCR 3.7.0 (version=%s, lang=%s)…",
             s.ocr_version, s.ocr_lang,
         )
-        # Optional CPU-runtime overrides. Only forwarded when the user opted in
-        # via .env; defaults preserve PaddleOCR's own behavior (cpu_threads=10,
-        # rec batch=PaddleOCR default, mkldnn=True). See Settings.ocr_cpu_threads
-        # / ocr_rec_batch_size / ocr_enable_mkldnn docstrings for tuning advice.
+        # Optional runtime overrides. Only forwarded when the user opted in via
+        # .env; defaults preserve PaddleOCR's own behavior (cpu_threads=10, rec
+        # batch=PaddleOCR default, mkldnn=True, device auto-detected by Paddle).
+        # See Settings.ocr_cpu_threads / ocr_rec_batch_size / ocr_enable_mkldnn /
+        # device / use_fp16 docstrings for tuning advice.
         runtime_kwargs: dict[str, Any] = {"enable_mkldnn": s.ocr_enable_mkldnn}
         if s.ocr_cpu_threads and s.ocr_cpu_threads > 0:
             runtime_kwargs["cpu_threads"] = s.ocr_cpu_threads
         if s.ocr_rec_batch_size is not None:
             runtime_kwargs["text_recognition_batch_size"] = s.ocr_rec_batch_size
+        # device: 'auto' → omit the kwarg so Paddle auto-detects (GPU if the
+        # paddlepaddle-gpu build is installed, else CPU). 'gpu'/'cpu' forward
+        # verbatim. PaddleOCR's parse_common_args accepts device='gpu'/'cpu'/
+        # 'gpu:0'/'gpu:0,1' but NOT 'auto' — that's why we translate it here.
+        if s.device != "auto":
+            runtime_kwargs["device"] = s.device
+        # FP16 only takes effect on GPU via TensorRT (PaddleOCR silently ignores
+        # precision on CPU). Gate on device=='gpu' explicitly so 'auto' hosts
+        # don't accidentally trigger a TensorRT engine build when Paddle happens
+        # to pick a GPU — users who want FP16 under auto must set device='gpu'.
+        if s.use_fp16 and s.device == "gpu":
+            runtime_kwargs["precision"] = "fp16"
+            runtime_kwargs["use_tensorrt"] = True
         self._ocr = PaddleOCR(
             lang=s.ocr_lang,
             ocr_version=s.ocr_version,
@@ -284,12 +312,13 @@ class OCREngine:
         )
         logger.info(
             "PaddleOCR ready: version=%s lang=%s granularity=%s "
-            "det_thresh=%.2f unclip=%.1f cpu_threads=%s rec_batch=%s mkldnn=%s",
+            "det_thresh=%.2f unclip=%.1f device=%s cpu_threads=%s rec_batch=%s "
+            "mkldnn=%s fp16=%s",
             s.ocr_version, s.ocr_lang, s.ocr_granularity,
-            s.ocr_threshold, s.ocr_unclip_ratio,
+            s.ocr_threshold, s.ocr_unclip_ratio, s.device,
             s.ocr_cpu_threads or "default",
             s.ocr_rec_batch_size if s.ocr_rec_batch_size is not None else "default",
-            s.ocr_enable_mkldnn,
+            s.ocr_enable_mkldnn, s.use_fp16,
         )
 
     def detect_and_recognize(
@@ -327,39 +356,46 @@ class OCREngine:
             kwargs["text_det_thresh"] = det_thresh
 
         import time as _time
-        _t0 = _time.perf_counter()
-        results = self._ocr.predict(arr, **kwargs)
-        _t_predict = _time.perf_counter() - _t0
+        # Serialize the predict() call AND the stats update. predict() itself
+        # isn't thread-safe (see _predict_lock docstring); the stats write is
+        # bundled in so the lock also gives us atomic accounting. Post-processing
+        # (TextDetection building, crop encoding, paragraph merge) runs OUTSIDE
+        # the lock — it doesn't touch the PaddleOCR instance.
+        with self._predict_lock:
+            _t0 = _time.perf_counter()
+            results = self._ocr.predict(arr, **kwargs)
+            _t_predict = _time.perf_counter() - _t0
 
-        if not results:
-            # Still account for the time spent, even on empty results.
+            if not results:
+                # Still account for the time spent, even on empty results.
+                self._stats["predict_calls"] += 1
+                self._stats["t_predict"] += _t_predict
+                return []
+
+            r0 = results[0]
+            if r0 is None:  # defensive: predict() shouldn't yield [None], but guard
+                self._stats["predict_calls"] += 1
+                self._stats["t_predict"] += _t_predict
+                return []
+            polys = r0.get("rec_polys") or []
+            texts = r0.get("rec_texts") or []
+            scores = r0.get("rec_scores") or []
+            dt_polys = r0.get("dt_polys") or []
+            n = min(len(polys), len(texts), len(scores))
+
+            # Per-tile + cumulative stats. predict() is a black box (det+rec
+            # fused), so we can't split det vs rec time here; the det/rec BOX
+            # COUNT ratio is the diagnostic signal instead (det >> rec →
+            # detector noise; high rec count × long predict → rec is the
+            # bottleneck → tune batch/threads).
             self._stats["predict_calls"] += 1
+            self._stats["boxes_detected"] += len(dt_polys) or n
+            self._stats["boxes_recognized"] += n
             self._stats["t_predict"] += _t_predict
-            return []
-
-        r0 = results[0]
-        if r0 is None:  # defensive: predict() shouldn't yield [None], but guard
-            self._stats["predict_calls"] += 1
-            self._stats["t_predict"] += _t_predict
-            return []
-        polys = r0.get("rec_polys") or []
-        texts = r0.get("rec_texts") or []
-        scores = r0.get("rec_scores") or []
-        dt_polys = r0.get("dt_polys") or []
-        n = min(len(polys), len(texts), len(scores))
-
-        # Per-tile + cumulative stats. predict() is a black box (det+rec fused),
-        # so we can't split det vs rec time here; the det/rec BOX COUNT ratio is
-        # the diagnostic signal instead (det >> rec → detector noise; high rec
-        # count × long predict → rec is the bottleneck → tune batch/threads).
-        self._stats["predict_calls"] += 1
-        self._stats["boxes_detected"] += len(dt_polys) or n
-        self._stats["boxes_recognized"] += n
-        self._stats["t_predict"] += _t_predict
-        logger.info(
-            "ocr tile: predict=%.2fs boxes=det/rec=%d/%d",
-            _t_predict, len(dt_polys) or n, n,
-        )
+            logger.info(
+                "ocr tile: predict=%.2fs boxes=det/rec=%d/%d",
+                _t_predict, len(dt_polys) or n, n,
+            )
 
         gran = granularity or self.settings.ocr_granularity
 

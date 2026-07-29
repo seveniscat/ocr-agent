@@ -123,6 +123,26 @@ class Settings(BaseSettings):
                     "debugging oneDNN issues — turning it off will make CPU "
                     "inference several times slower.",
     )
+    device: Literal["auto", "gpu", "cpu"] = Field(
+        "auto",
+        description="PaddleOCR inference device. 'auto' = don't pass `device` "
+                    "to PaddleOCR, letting Paddle auto-detect (uses GPU 0 when "
+                    "paddlepaddle-gpu is installed, else CPU). 'gpu'/'cpu' = "
+                    "force that device. Pair with the paddlepaddle-gpu install "
+                    "(see docs/deploy-gpu.md); on a CPU-only paddlepaddle build, "
+                    "'gpu' will fail at model load. Defaults to 'auto' so a "
+                    "single .env works on both GPU and CPU hosts.",
+    )
+    use_fp16: bool = Field(
+        True,
+        description="Run inference in FP16 (half precision). Only honored when "
+                    "device='gpu' — implemented by forwarding precision='fp16' "
+                    "+ use_tensorrt=True to PaddleOCR. On Ada/Ampere GPUs (e.g. "
+                    "RTX 4060) this roughly doubles throughput with negligible "
+                    "accuracy loss on PP-OCRv6; first inference is slower "
+                    "(TensorRT engine compile, cached after). Ignored on CPU / "
+                    "auto. Turn off if you see TRT accuracy regressions.",
+    )
     rec_confidence_fallback: float = Field(
         0.94, ge=0.0, le=1.0,
         description="[vlm_ocr_fallback] Recognition confidence below which a crop "
