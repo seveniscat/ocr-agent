@@ -12,9 +12,12 @@ subclassing :class:`VLMProvider` and adding a branch in :func:`build_vlm`.
 from __future__ import annotations
 
 import abc
+import logging
 from typing import TYPE_CHECKING
 
 from ..config import Settings
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     import numpy as np
@@ -113,20 +116,34 @@ class VLMProvider(abc.ABC):
         from .qwen import _to_b64_jpeg  # local import avoids a hard PIL dep at import
 
         data_url = _to_b64_jpeg(image[y1:y2, x1:x2])
-        text, _conf = self.ask_image(
+        # Tag the log with which prompt path this is — suspects use the
+        # built-in art-text prompt (self-rating), rings use the arc prompt.
+        from .qwen import _PROMPT
+        kind = "suspect" if prompt == _PROMPT else "ring"
+        raw, _conf = self.ask_image(
             data_url, prompt, max_tokens=512, json_mode=False
         )
-        text = (text or "").strip()
-        if not text or text.upper() == "EMPTY":
+        raw = (raw or "").strip()
+        if not raw or raw.upper() == "EMPTY":
+            logger.info(
+                "recognize_crop_with_prompt: %s bbox=[%d,%d,%d,%d] %dx%d -> EMPTY",
+                kind, x1, y1, x2, y2, x2 - x1, y2 - y1,
+            )
             return "", 0.0
         # Strip a leading/trailing quote the model sometimes adds.
         import re
-        text = re.sub(r"^['\"]|['\"]$", "", text)
+        text = re.sub(r"^['\"]|['\"]$", "", raw)
         # The self-rating prompt appends "||<score>"; parse it into a real
         # confidence. Idempotent for prompts that don't ask for a score (no
         # "||" present → falls back to 0.8, unchanged behavior).
         from .qwen import _parse_self_rated
         text, score = _parse_self_rated(text)
+        logger.info(
+            "recognize_crop_with_prompt: %s bbox=[%d,%d,%d,%d] %dx%d -> "
+            "text=%r conf=%.2f (raw=%r)",
+            kind, x1, y1, x2, y2, x2 - x1, y2 - y1,
+            text[:80], score, raw[:80],
+        )
         return text, score
 
     def recognize_crops_with_prompts_batch(

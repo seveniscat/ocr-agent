@@ -54,6 +54,13 @@ def _parse_self_rated(text: str) -> tuple[str, float]:
                 return body, score
         except ValueError:
             pass
+    # Model didn't emit a parseable "||<score>" suffix — fall back. Logging
+    # here surfaces prompt-compliance regressions (e.g. the model ignoring the
+    # self-rating instruction) without dropping the recognized text.
+    logger.info(
+        "self-rated fallback: model didn't follow '||score' format, "
+        "using conf=%.2f; raw=%r", _FALLBACK_CONF, text[:80],
+    )
     return text, _FALLBACK_CONF
 
 
@@ -90,17 +97,27 @@ class QwenVLM(VLMProvider):
         crop = image[y1:y2, x1:x2]
         b64 = _to_b64_jpeg(crop)
 
-        text, _conf = self.ask_image(
+        raw, _conf = self.ask_image(
             b64, _PROMPT, max_tokens=128, json_mode=False
         )
-        text = text.strip()
-        if not text or text.upper() == "EMPTY":
+        raw = raw.strip()
+        if not raw or raw.upper() == "EMPTY":
+            logger.info(
+                "recognize_crop: bbox=[%d,%d,%d,%d] %dx%d -> EMPTY",
+                x1, y1, x2, y2, x2 - x1, y2 - y1,
+            )
             return "", 0.0
         # The self-rating prompt appends "||<score>"; parse it into a real
         # confidence. Falls back to _FALLBACK_CONF (0.8) if the model didn't
         # follow the format — same behavior as before this change.
-        text, score = _parse_self_rated(text)
+        text, score = _parse_self_rated(raw)
         text = re.sub(r"^['\"]|['\"]$", "", text)
+        logger.info(
+            "recognize_crop: bbox=[%d,%d,%d,%d] %dx%d -> text=%r conf=%.2f "
+            "(raw=%r)",
+            x1, y1, x2, y2, x2 - x1, y2 - y1,
+            text[:80], score, raw[:80],
+        )
         return text, score
 
     # NOTE: recognize_crops_batch is inherited from VLMProvider, which dispatches
@@ -168,9 +185,18 @@ class QwenVLM(VLMProvider):
         if want_thinking:
             # OpenAI-compatible passthrough for the DashScope-specific flag.
             kwargs["extra_body"] = {"enable_thinking": True}
+        import time
+        _t = time.perf_counter()
         resp = self._client.chat.completions.create(**kwargs)
+        _dt = time.perf_counter() - _t
         msg = resp.choices[0].message
         text = (getattr(msg, "content", None) or "").strip()
+        logger.info(
+            "ask_image: model=%s think=%s json=%s tokens=%d len=%d %.2fs",
+            kwargs["model"], want_thinking, use_json,
+            getattr(getattr(resp, "usage", None), "total_tokens", 0) or 0,
+            len(text), _dt,
+        )
         return text, 0.8
 
 
