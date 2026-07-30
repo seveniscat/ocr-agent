@@ -30,7 +30,7 @@ from fastapi import (
     UploadFile,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -1310,6 +1310,77 @@ async def compute_panels_endpoint(
             panels=out_panels,
         ).model_dump(),
     )
+
+
+@app.post("/preprocess", tags=["preprocess"])
+async def preprocess(
+    file: UploadFile | None = File(None, description="Image upload (mutually exclusive with 'url')."),
+    url: str | None = Form(None, description="Image URL to download (used when 'file' is absent)."),
+    options: str | None = Form(
+        None,
+        description='JSON string of enhancement options, e.g. '
+        '{"clahe":true,"sharpen":true,"denoise":false,"grayscale":false,'
+        '"threshold":null,"morph_close":false}. '
+        'Keys: clahe(bool,clahe_clip,clahe_tile), sharpen(bool,sharpen_amount), '
+        'denoise(bool,denoise_strength), grayscale(bool), '
+        'threshold(null|"otsu"|"adaptive"), morph_close(bool,morph_ksize). '
+        'All optional; omitted fields use server defaults (CLAHE + sharpen on).',
+    ),
+):
+    """Apply user-selected image enhancements and return the enhanced PNG.
+
+    Powers the Web UI's "图片预处理" panel: the browser uploads an image (or a
+    URL), receives the enhanced PNG back as ``image/png``, and previews it.
+    Enhancement runs synchronously — each step is cheap (CLAHE / unsharp /
+    denoise / threshold / morphology), so there's no task queue.
+
+    Returns HTTP 400 when no image is supplied, the bytes aren't a decodable
+    image, or the ``options`` JSON is malformed.
+    """
+    import json
+
+    import cv2
+    import numpy as np
+
+    from .imgenhance import enhance
+
+    data = await _resolve_image(file, url)
+    if not data:
+        raise HTTPException(status_code=400, detail="empty image payload")
+
+    # Decode bytes → RGB ndarray (imdecode yields BGR; flip to our convention).
+    arr = np.frombuffer(data, dtype=np.uint8)
+    bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    if bgr is None:
+        raise HTTPException(
+            status_code=400,
+            detail="could not decode image (unsupported format or corrupt bytes)",
+        )
+    rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+
+    opt_obj: dict = {}
+    if options:
+        try:
+            parsed = json.loads(options)
+        except json.JSONDecodeError as exc:
+            raise HTTPException(
+                status_code=400, detail=f"options is not valid JSON: {exc}"
+            ) from exc
+        if not isinstance(parsed, dict):
+            raise HTTPException(status_code=400, detail="options must be a JSON object")
+        # Drop nulls so omitted keys fall back to enhance()'s defaults.
+        opt_obj = {k: v for k, v in parsed.items() if v is not None}
+
+    try:
+        enhanced = enhance(rgb, opt_obj or None)
+    except Exception as exc:  # defensive: malformed option values
+        raise HTTPException(status_code=400, detail=f"enhancement failed: {exc}") from exc
+
+    ok, buf = cv2.imencode(".png", cv2.cvtColor(enhanced, cv2.COLOR_RGB2BGR))
+    if not ok:
+        raise HTTPException(status_code=500, detail="failed to encode enhanced image")
+
+    return Response(content=buf.tobytes(), media_type="image/png")
 
 
 def _settings() -> Settings:

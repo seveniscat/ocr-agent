@@ -462,6 +462,98 @@
       </summary>
     </details>
 
+    <!-- 图片预处理：上传/加载图片后勾选增强项，应用预览→替换查看器图，之后「识别」作用于处理后的图。-->
+    <details class="params" id="preprocess">
+      <summary>
+        <span class="chev">▸</span> 图片预处理（对比度 / 锐化 / 去噪…）
+        <span class="badge" id="preBadge">已应用</span>
+      </summary>
+
+      <div class="param-group">
+        <h4>对比度增强</h4>
+        <div class="field">
+          <label><input type="checkbox" id="pe_clahe" checked> CLAHE（局部自适应直方图均衡化，最有效）</label>
+          <div class="hint">局部增强对比度，正常文字变清晰，背景噪声不会被过度放大。建议默认开启</div>
+        </div>
+        <div class="field">
+          <label>clahe clip_limit <span class="val" id="v_pe_claheclip">2.0</span></label>
+          <input type="range" id="pe_clahe_clip" min="0.5" max="4" step="0.1" value="2.0">
+          <div class="hint">对比度增益上限。调高→更激进；过高会放大噪声</div>
+        </div>
+        <div class="field">
+          <label>clahe tile_size <span class="val" id="v_pe_clahetile">8</span></label>
+          <input type="range" id="pe_clahe_tile" min="4" max="16" step="1" value="8">
+          <div class="hint">分块网格大小（px）。调大→更全局的均衡</div>
+        </div>
+      </div>
+
+      <div class="param-group">
+        <h4>边缘与降噪</h4>
+        <div class="field">
+          <label><input type="checkbox" id="pe_sharpen" checked> 轻度锐化</label>
+          <div class="hint">unsharp mask 强化文字边缘，提升检测置信度</div>
+        </div>
+        <div class="field">
+          <label>sharpen amount <span class="val" id="v_pe_amount">0.6</span></label>
+          <input type="range" id="pe_sharpen_amount" min="0.2" max="1.5" step="0.1" value="0.6">
+          <div class="hint">锐化强度。过高→细笔画出现振铃，建议 ≤1</div>
+        </div>
+        <div class="field">
+          <label><input type="checkbox" id="pe_denoise"> 轻度去噪（可选）</label>
+          <div class="hint">非局部均值滤波清理背景，保边缘不糊文字。背景干净时可不开</div>
+        </div>
+        <div class="field">
+          <label>denoise strength <span class="val" id="v_pe_strength">7</span></label>
+          <input type="range" id="pe_denoise_strength" min="3" max="15" step="1" value="7">
+          <div class="hint">去噪强度（h）。调高→更干净，但可能弱化淡色字</div>
+        </div>
+      </div>
+
+      <div class="param-group">
+        <h4>灰度与二值化（扫描件 / 低对比）</h4>
+        <div class="field">
+          <label><input type="checkbox" id="pe_grayscale"> 灰度化（可选）</label>
+          <div class="hint">转灰度再做后续增强，部分彩色噪声图对比度提升更明显</div>
+        </div>
+        <div class="field">
+          <label><input type="checkbox" id="pe_threshold"> 二值化（可选）</label>
+          <div class="hint">对扫描件/低对比文字效果显著，彩色包装图可能丢信息，慎用</div>
+        </div>
+        <div class="field">
+          <label>threshold mode</label>
+          <select id="pe_threshold_mode">
+            <option value="otsu">otsu（全局，光照均匀）</option>
+            <option value="adaptive">adaptive（自适应，光照不均）</option>
+          </select>
+          <div class="hint">otsu 自动算全局阈值；adaptive 用局部窗口，适合阴影/不均光</div>
+        </div>
+      </div>
+
+      <div class="param-group">
+        <h4>形态学</h4>
+        <div class="field">
+          <label><input type="checkbox" id="pe_morph"> 形态学闭运算（可选）</label>
+          <div class="hint">膨胀+腐蚀连通断裂笔画，有助于检测器连字成行</div>
+        </div>
+        <div class="field">
+          <label>morph kernel <span class="val" id="v_pe_ks">2</span></label>
+          <input type="range" id="pe_morph_ksize" min="2" max="5" step="1" value="2">
+          <div class="hint">核大小。调大→更激进连通，但可能把相邻字糊在一起</div>
+        </div>
+      </div>
+
+      <div class="param-group">
+        <div class="action-row">
+          <button class="btn primary" id="applyPreprocessBtn" disabled>▶ 应用预览</button>
+          <button class="btn ghost" id="revertPreprocessBtn" disabled>↩ 恢复原图</button>
+        </div>
+        <div style="margin-top:8px">
+          <button class="btn ghost" id="resetPreprocess" style="width:100%">↺ 恢复默认勾选</button>
+        </div>
+        <div class="hint" style="margin-top:6px">处理顺序：灰度→CLAHE→去噪→锐化→二值化→闭运算。应用后查看器显示处理图，「识别」作用于该图</div>
+      </div>
+    </details>
+
     <!-- Tunable params -->
     <details class="params" id="params">
       <summary>
@@ -1778,6 +1870,13 @@ function renderUnderstanding(d) {
 let currentFile = null;
 let currentUrl = null;      // when set, actions send `url` instead of `file`
 let currentObjectUrl = null;
+// Preprocess: snapshot the pre-enhancement source so 「恢复原图」 can revert.
+// `preprocessApplied` is true while the viewer shows an enhanced image (so
+// 「识别」 acts on the enhanced bytes via the reconstructed currentFile).
+let originalFile = null;
+let originalUrl = null;
+let originalObjectUrl = null;
+let preprocessApplied = false;
 const dz = $('dropzone'), fileInput = $('fileInput');
 dz.addEventListener('click', () => fileInput.click());
 ['dragenter','dragover'].forEach(e=>dz.addEventListener(e,ev=>{ev.preventDefault();dz.classList.add('over');}));
@@ -1826,6 +1925,8 @@ function handleFile(file) {
   if (currentObjectUrl) URL.revokeObjectURL(currentObjectUrl);
   currentObjectUrl = URL.createObjectURL(file);
   updateFilenameDisplay(0, 0);
+  // New original input → clear any prior preprocessing snapshot.
+  resetPreprocessSnapshot();
   // Show image immediately, NO recognition yet.
   view.items = []; view.panels = []; view.candidates = []; view.splitMode = false; view.subject = null;
   view.selectedIdx = -1; view.activeIdx = -1;
@@ -1845,6 +1946,9 @@ function _activateImage() {
   $('understandBtn').disabled = false;
   $('verifyBtn').disabled = false;
   $('clearBtn').disabled = false;
+  // Preprocess: 「应用预览」 needs an image; 「恢复原图」 only after applied.
+  $('applyPreprocessBtn').disabled = false;
+  $('revertPreprocessBtn').disabled = !preprocessApplied;
   $('count').textContent = '';
   $('itemsPlaceholder').textContent = '点击「识别」开始';
   $('jsonOut').textContent = '';
@@ -1865,6 +1969,8 @@ function handleUrl(rawUrl) {
   if (currentObjectUrl) { URL.revokeObjectURL(currentObjectUrl); currentObjectUrl = null; }
   currentUrl = url;
   $('filename').textContent = `🔗 ${url}`;
+  // New original input → clear any prior preprocessing snapshot.
+  resetPreprocessSnapshot();
   view.items = []; view.panels = []; view.candidates = []; view.splitMode = false; view.subject = null;
   view.selectedIdx = -1; view.activeIdx = -1;
   view.verify = null; view.verifySel = null; view.verifyHighlight = null;
@@ -1880,10 +1986,176 @@ $('urlInput').addEventListener('keydown', e => { if (e.key === 'Enter') handleUr
 $('recognizeBtn').addEventListener('click', recognize);
 $('clearBtn').addEventListener('click', clearAll);
 
+// =========================================================================
+// 图片预处理：勾选增强项 → POST /preprocess → 用返回 PNG 替换查看器中的图，
+// 之后「识别」作用于处理后的图。「恢复原图」回到预处理前的源。
+// =========================================================================
+const PRE_DEFAULTS = {
+  clahe: true, clahe_clip: 2.0, clahe_tile: 8,
+  sharpen: true, sharpen_amount: 0.6,
+  denoise: false, denoise_strength: 7,
+  grayscale: false,
+  threshold: false, threshold_mode: 'otsu',
+  morph_close: false, morph_ksize: 2,
+};
+const pre = {...PRE_DEFAULTS};
+
+// Collect the current checkbox/slider state into the options object the
+// server expects. threshold is sent as null (off) / "otsu" / "adaptive".
+function buildPreprocessOptions() {
+  const o = {
+    clahe: pre.clahe,
+    clahe_clip: pre.clahe_clip,
+    clahe_tile: pre.clahe_tile,
+    sharpen: pre.sharpen,
+    sharpen_amount: pre.sharpen_amount,
+    denoise: pre.denoise,
+    denoise_strength: pre.denoise_strength,
+    grayscale: pre.grayscale,
+    threshold: pre.threshold ? pre.threshold_mode : null,
+    morph_close: pre.morph_close,
+    morph_ksize: pre.morph_ksize,
+  };
+  return o;
+}
+
+function syncPreprocessUI() {
+  $('pe_clahe').checked = pre.clahe;
+  $('pe_clahe_clip').value = pre.clahe_clip; $('v_pe_claheclip').textContent = pre.clahe_clip.toFixed(1);
+  $('pe_clahe_tile').value = pre.clahe_tile; $('v_pe_clahetile').textContent = String(pre.clahe_tile);
+  $('pe_sharpen').checked = pre.sharpen;
+  $('pe_sharpen_amount').value = pre.sharpen_amount; $('v_pe_amount').textContent = pre.sharpen_amount.toFixed(1);
+  $('pe_denoise').checked = pre.denoise;
+  $('pe_denoise_strength').value = pre.denoise_strength; $('v_pe_strength').textContent = String(pre.denoise_strength);
+  $('pe_grayscale').checked = pre.grayscale;
+  $('pe_threshold').checked = pre.threshold;
+  $('pe_threshold_mode').value = pre.threshold_mode;
+  $('pe_morph').checked = pre.morph_close;
+  $('pe_morph_ksize').value = pre.morph_ksize; $('v_pe_ks').textContent = String(pre.morph_ksize);
+}
+
+// Forget the pre-enhancement snapshot (called on new image / clear). Does NOT
+// touch currentFile/currentUrl — only the saved "original" reference.
+function resetPreprocessSnapshot() {
+  originalFile = null;
+  originalUrl = null;
+  if (originalObjectUrl) { URL.revokeObjectURL(originalObjectUrl); originalObjectUrl = null; }
+  preprocessApplied = false;
+  $('preBadge').classList.remove('show');
+  $('revertPreprocessBtn').disabled = true;
+}
+
+// wire the preprocess controls (checkboxes + sliders + selects)
+const peBind = (inputId, valId, key, fmt) => {
+  $(inputId).addEventListener('input', e => {
+    const t = e.target;
+    const v = t.type === 'checkbox' ? t.checked
+            : t.tagName === 'SELECT' ? t.value
+            : t.type === 'range' ? parseFloat(t.value) : t.value;
+    pre[key] = v;
+    if (valId) $(valId).textContent = typeof v === 'number' ? fmt(v) : v;
+  });
+};
+peBind('pe_clahe_clip','v_pe_claheclip','clahe_clip', v=>v.toFixed(1));
+peBind('pe_clahe_tile','v_pe_clahetile','clahe_tile', v=>String(v));
+peBind('pe_sharpen_amount','v_pe_amount','sharpen_amount', v=>v.toFixed(1));
+peBind('pe_denoise_strength','v_pe_strength','denoise_strength', v=>String(v));
+peBind('pe_morph_ksize','v_pe_ks','morph_ksize', v=>String(v));
+peBind('pe_threshold_mode',null,'threshold_mode', v=>v);
+$('pe_clahe').addEventListener('change', e=>{pre.clahe=e.target.checked;});
+$('pe_sharpen').addEventListener('change', e=>{pre.sharpen=e.target.checked;});
+$('pe_denoise').addEventListener('change', e=>{pre.denoise=e.target.checked;});
+$('pe_grayscale').addEventListener('change', e=>{pre.grayscale=e.target.checked;});
+$('pe_threshold').addEventListener('change', e=>{pre.threshold=e.target.checked;});
+$('pe_morph').addEventListener('change', e=>{pre.morph_close=e.target.checked;});
+
+$('resetPreprocess').onclick = () => { Object.assign(pre, PRE_DEFAULTS); syncPreprocessUI(); };
+
+// Apply the selected enhancements server-side, then swap the viewer image to
+// the returned PNG. The enhanced bytes also become currentFile so subsequent
+// 「识别」 sends the enhanced image (not the original).
+async function applyPreprocess() {
+  if (!hasImage()) { setStatus('请先上传图片或加载链接','error'); return; }
+  // Snapshot the current source as the "original" so revert is possible.
+  // (First apply only; re-applying keeps the same original so we don't stack.)
+  if (!preprocessApplied) {
+    originalFile = currentFile;
+    originalUrl = currentUrl;
+  }
+
+  const fd = new FormData();
+  appendImage(fd);
+  fd.append('options', JSON.stringify(buildPreprocessOptions()));
+
+  const btn = $('applyPreprocessBtn');
+  btn.disabled = true;
+  const t0 = performance.now();
+  const tick = setInterval(()=>setStatus(`预处理中… · ${formatElapsed(performance.now()-t0)}`,'busy'), 200);
+  setStatus('预处理中…','busy');
+  try {
+    const resp = await fetch('/preprocess', { method:'POST', body: fd });
+    if (!resp.ok) {
+      const t = await resp.text(); throw new Error(`HTTP ${resp.status}: ${t.slice(0,200)}`);
+    }
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+
+    // Replace the viewer image with the enhanced PNG. Drop the old object URL
+    // unless it's the saved original (needed for revert).
+    const oldUrl = currentObjectUrl;
+    currentObjectUrl = url;
+    // Build a File from the blob so appendImage() sends enhanced bytes on 识别.
+    currentFile = new File([blob], 'preprocessed.png', { type: 'image/png' });
+    currentUrl = null;
+    $('urlInput').value = '';
+    if (oldUrl && oldUrl !== originalObjectUrl) URL.revokeObjectURL(oldUrl);
+
+    preprocessApplied = true;
+    $('preBadge').classList.add('show');
+    $('revertPreprocessBtn').disabled = false;
+    // Fresh overlay (enhanced geometry differs from any prior results).
+    view.items = []; view.panels = []; view.candidates = []; view.splitMode = false;
+    view.selectedIdx = -1; view.activeIdx = -1;
+    drawPolygons();
+    showImage(url);
+    $('count').textContent = '';
+    $('jsonOut').textContent = '';
+    setStatus(`预处理已应用 · 点击「识别」作用于处理后的图 · ${formatElapsed(performance.now()-t0)}`,'ok');
+  } catch (err) {
+    setStatus(`预处理错误: ${err.message}`,'error');
+    console.error(err);
+    // Restore the (still-valid) original source reference on failure.
+    if (!preprocessApplied) { originalFile = null; originalUrl = null; }
+  } finally {
+    clearInterval(tick);
+    btn.disabled = false;
+  }
+}
+
+// Revert to the pre-enhancement source (file or URL) and clear results.
+function revertPreprocess() {
+  if (!preprocessApplied) return;
+  const of = originalFile, ou = originalUrl;
+  preprocessApplied = false;
+  $('preBadge').classList.remove('show');
+  $('revertPreprocessBtn').disabled = true;
+  originalFile = null; originalUrl = null;
+  // Reuse handleFile/handleUrl which set currentFile/currentUrl + redraw.
+  if (of) { handleFile(of); }
+  else if (ou) { $('urlInput').value = ou; handleUrl(ou); }
+  else { setStatus('原图不可用，请重新加载','error'); }
+  setStatus('已恢复原图','');
+}
+
+$('applyPreprocessBtn').addEventListener('click', applyPreprocess);
+$('revertPreprocessBtn').addEventListener('click', revertPreprocess);
+syncPreprocessUI();
+
 function clearAll() {
   currentFile = null;
   currentUrl = null;
   if (currentObjectUrl) { URL.revokeObjectURL(currentObjectUrl); currentObjectUrl = null; }
+  resetPreprocessSnapshot();
   view.items = []; view.panels = []; view.understanding = null;
   view.selectedIdx = -1; view.activeIdx = -1;
   view.candidates = []; view.splitMode = false; view.subject = null;
@@ -1898,6 +2170,8 @@ function clearAll() {
   $('splitPanelsBtn').disabled = true;
   $('understandBtn').disabled = true;
   $('verifyBtn').disabled = true;
+  $('applyPreprocessBtn').disabled = true;
+  $('revertPreprocessBtn').disabled = true;
   $('runVerifyBtn').disabled = true;
   $('clearBtn').disabled = true;
   $('count').textContent = '';
