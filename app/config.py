@@ -59,7 +59,7 @@ class Settings(BaseSettings):
                     "Lower → more boxes (recall up) but more noise.",
     )
     ocr_box_thresh: float = Field(
-        0.6, ge=0.0, le=1.0,
+        0.8, ge=0.0, le=1.0,
         description="Min average score inside a candidate box for it to be kept. "
                     "Lower → keeps faint art text.",
     )
