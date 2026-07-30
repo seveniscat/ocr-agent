@@ -3,11 +3,17 @@
 DashScope exposes an OpenAI-compatible endpoint; we send the cropped region as
 a base64 image with a short, strict prompt asking for the literal text only.
 This avoids the "VLM emits coordinates" problem entirely — we just want chars.
+
+The VLM's job is text recognition ONLY. It does not rate confidence: empirically
+its self-rated scores were unreliable (art-text over-modesty, format drift into
+JSON). The pipeline keeps the original PaddleOCR confidence for any box the VLM
+re-reads; "success" here is simply "the VLM returned non-empty text".
 """
 from __future__ import annotations
 
 import base64
 import io
+import json
 import logging
 import re
 
@@ -18,64 +24,66 @@ logger = logging.getLogger(__name__)
 
 _PROMPT = (
     "Read out the text visible in this image, exactly as written. "
-    "Output the recognized text followed by '||' and your confidence "
-    "score (0.0-1.0) that the text is correct. "
-    "Format: <text>||<score>  (e.g. 12345||0.95). "
-    "No quotes, no commentary. "
-    "If the image contains no readable text, output the single word: EMPTY"
+    "Return the text ONLY when you are confident you can read EVERY character "
+    "correctly — i.e. the text is clear and legible, not blurred/truncated/"
+    "obscured. If ANY part is unclear, partially hidden, or you would have to "
+    "guess, do NOT return a partial or guessed result: output the single word "
+    "EMPTY instead. Accuracy over coverage — an honest EMPTY is better than a "
+    "wrong guess. "
+    "When you do return text, output ONLY the recognized text itself — no "
+    "quotes, no commentary, no JSON, no code fences."
 )
 
-# Separator between text and the model's self-rated confidence score.
-_CONF_SEP = "||"
-# Fallback confidence when the model doesn't emit the expected "||score" suffix.
-# Kept high enough to survive rec_confidence_drop (0.60) so a format regression
-# never silently drops a valid read, but not 1.0 — it's an unknown, not a sure.
-_FALLBACK_CONF = 0.8
 
+def _clean_vlm_text(raw: str) -> str | None:
+    """Normalize a VLM recognition response into clean text, or None on failure.
 
-def _parse_self_rated(text: str) -> tuple[str, float]:
-    """Split a ``text||confidence`` VLM response into ``(clean_text, score)``.
+    The prompt asks for the literal text only (no score, no JSON). The model
+    usually complies, but it occasionally goes off-script and emits a JSON
+    object — sometimes wrapped in a ```json fence — e.g.::
 
-    The fallback prompt asks the model to append ``||<0-1>`` to its read. When
-    it does, we return the score (clamped to [0, 1]). When it doesn't follow
-    the format — or the score is malformed / out of range — we fall back to
-    ``_FALLBACK_CONF`` (0.8), matching the pre-change behavior so a format
-    regression can't quietly filter out good results.
+        ```json
+        {"text": "能量宇宙 擎天柱", "score": 0.0}
+        ```
 
-    ``rpartition`` is used so a text body that itself contains ``||`` keeps its
-    earlier occurrences (only the final ``||<score>`` is split off). When the
-    suffix isn't a clean float (e.g. ``0.95）``, ``置信度0.95``, trailing
-    punctuation), a regex extracts the last float in the suffix as a second
-    chance before falling back.
+    Returning that verbatim as ``text`` poisons the OCR result (a downstream
+    caller sees a box whose text is the raw JSON string). We refuse to guess
+    the model's intent in that case and return ``None`` so the caller treats it
+    as a failed read and keeps the original PaddleOCR result.
+
+    Returns:
+        The cleaned text (leading/trailing quotes/whitespace stripped), or
+        ``None`` when the response is empty, the literal ``EMPTY`` sentinel,
+        or a JSON/fenced block (model abandoned the plain-text format).
     """
-    if _CONF_SEP in text:
-        body, _, tail = text.rpartition(_CONF_SEP)
-        body = body.strip()
-        tail = tail.strip()
+    s = (raw or "").strip()
+    if not s or s.upper() == "EMPTY":
+        return None
+    # Markdown code fence (``` or ```json ... ```): the model wrapped its
+    # output in a fence — a clear sign it abandoned the requested plain format.
+    if s.startswith("```"):
+        logger.info(
+            "vlm text rejected: fenced/JSON output instead of plain text; "
+            "raw=%r", raw[:80],
+        )
+        return None
+    # A JSON object with text/score keys: the model emitted structured output.
+    # Tolerate leading/trailing whitespace; other JSON-like text (e.g. a real
+    # OCR of '{"price": 9.9}') without those keys is kept as literal text.
+    if s.startswith("{"):
         try:
-            score = float(tail)
-            if 0.0 <= score <= 1.0:
-                return body, score
-        except ValueError:
-            pass
-        # Second chance: the suffix has a float buried in prose/punctuation
-        # (e.g. "0.95）", "置信度0.95", "0.95."). Pull the last float out.
-        m = re.findall(r"\d+\.?\d*", tail)
-        if m:
-            try:
-                score = float(m[-1])
-                if 0.0 <= score <= 1.0:
-                    return body, score
-            except ValueError:
-                pass
-    # Model didn't emit a parseable "||<score>" suffix — fall back. Logging
-    # here surfaces prompt-compliance regressions (e.g. the model ignoring the
-    # self-rating instruction) without dropping the recognized text.
-    logger.info(
-        "self-rated fallback: model didn't follow '||score' format, "
-        "using conf=%.2f; raw=%r", _FALLBACK_CONF, text[:80],
-    )
-    return text, _FALLBACK_CONF
+            obj = json.loads(s)
+        except (ValueError, TypeError):
+            obj = None
+        if isinstance(obj, dict) and ("text" in obj or "score" in obj):
+            logger.info(
+                "vlm text rejected: JSON object with text/score key; raw=%r",
+                raw[:80],
+            )
+            return None
+    # Strip a leading/trailing quote the model sometimes adds.
+    return re.sub(r"^['\"]|['\"]$", "", s)
+
 
 
 class QwenVLM(VLMProvider):
@@ -114,25 +122,23 @@ class QwenVLM(VLMProvider):
         raw, _conf = self.ask_image(
             b64, _PROMPT, max_tokens=128, json_mode=False
         )
-        raw = raw.strip()
-        if not raw or raw.upper() == "EMPTY":
+        # The VLM does text recognition only — no self-rated score. _clean_vlm_text
+        # returns None for empty / EMPTY / JSON-fenced garbage, else the text.
+        text = _clean_vlm_text(raw)
+        if text is None:
             logger.info(
-                "recognize_crop: bbox=[%d,%d,%d,%d] %dx%d -> EMPTY",
-                x1, y1, x2, y2, x2 - x1, y2 - y1,
+                "recognize_crop: bbox=[%d,%d,%d,%d] %dx%d -> EMPTY/garbage "
+                "(raw=%r)",
+                x1, y1, x2, y2, x2 - x1, y2 - y1, (raw or "")[:80],
             )
             return "", 0.0
-        # The self-rating prompt appends "||<score>"; parse it into a real
-        # confidence. Falls back to _FALLBACK_CONF (0.8) if the model didn't
-        # follow the format — same behavior as before this change.
-        text, score = _parse_self_rated(raw)
-        text = re.sub(r"^['\"]|['\"]$", "", text)
+        # Confidence is a placeholder: the pipeline ignores it and keeps the
+        # original PaddleOCR score for this box. 1.0 just signals "read OK".
         logger.info(
-            "recognize_crop: bbox=[%d,%d,%d,%d] %dx%d -> text=%r conf=%.2f "
-            "(raw=%r)",
-            x1, y1, x2, y2, x2 - x1, y2 - y1,
-            text[:80], score, raw[:80],
+            "recognize_crop: bbox=[%d,%d,%d,%d] %dx%d -> text=%r (raw=%r)",
+            x1, y1, x2, y2, x2 - x1, y2 - y1, text[:80], (raw or "")[:80],
         )
-        return text, score
+        return text, 1.0
 
     # NOTE: recognize_crops_batch is inherited from VLMProvider, which dispatches
     # the per-crop calls across a thread pool (concurrency) rather than packing
@@ -166,18 +172,14 @@ class QwenVLM(VLMProvider):
         tolerant JSON parser instead. Defaults to the provider's setting
         (``self._enable_thinking``) when ``None``.
 
-        Confidence is a flat 0.8 placeholder: Qwen-VL gives no native score, so
-        this method returns a constant. Callers that need a real score use a
-        self-rating prompt and parse the response themselves:
-
-        - art-text / circular fallback (``_PROMPT`` / ``_CIRCULAR_PROMPT``)
-          append ``||score`` and parse it via :func:`_parse_self_rated`;
-        - VLM grounding OCR (``_OCR_PROMPT``) embeds a per-item ``confidence``
-          field in its JSON, parsed in ``vlm_ocr._norm_confidence``.
-
-        Every current ``ask_image`` caller discards the returned confidence
-        (``_conf``), so the placeholder is harmless — the real score lives in
-        the response text the caller parses.
+        Confidence is a flat placeholder: Qwen-VL gives no native score, so this
+        method always returns 0.8, which every caller discards. The art-text /
+        circular fallback paths no longer ask the VLM for a self-rated score
+        (it was unreliable) — they keep the original PaddleOCR confidence for
+        any re-read box and treat "non-empty VLM text" as success. Only the
+        VLM grounding OCR path (``_OCR_PROMPT``) still reads a per-item
+        ``confidence`` field from its JSON (parsed in
+        ``vlm_ocr._norm_confidence``), and that is independent of this method.
         """
         want_thinking = (
             self._enable_thinking if enable_thinking is None else enable_thinking

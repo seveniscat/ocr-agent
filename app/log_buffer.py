@@ -81,7 +81,8 @@ class LogRecord:
     vlm_rings: int = 0              # circular / seal regions considered
     fallback_threshold: float = 0.0  # rec_confidence_fallback used this run
     # Per-crop breakdown for the /logs detail view: one dict per crop sent to
-    # the VLM. Each has kind/box/orig_text/orig_conf/vlm_text/vlm_conf/outcome.
+    # the VLM. Each has kind/box/orig_text/orig_conf/vlm_text/outcome. (The VLM
+    # no longer supplies a usable score, so there is no vlm_conf field.)
     # Empty list when fallback didn't run; capped at CAPACITY_CROPS to bound
     # memory on pathological inputs (the aggregate counts above are unaffected).
     fallback_crops: list = field(default_factory=list)

@@ -41,9 +41,10 @@ _CIRCULAR_PROMPT = (
     "这是包装上沿圆弧/环形排布的文字（圆形 logo、印章、徽章上的弧形文字）。"
     "请按顺时针方向，从顶部（12 点钟方向）开始，原样读出环上所有可见文字。"
     "用 / 分隔各段弧形文字（如顶部和底部是两段）。"
-    "看不清的字不要瞎猜，用你对识别结果的真实把握程度反映。"
-    "输出格式：<文字>||<置信度>，置信度 0.0-1.0（例如 顶部文字/底部文字||0.9）。"
-    "不要解释、不要引号。如果该区域没有文字，只输出: EMPTY"
+    "只有当你能确信读对每一个字时才返回结果；只要有一个字模糊、被遮挡、"
+    "或需要靠猜，就不要返回部分或臆测的内容，直接输出: EMPTY"
+    "（准确的空，优于错误的猜）。"
+    "返回文字时只输出文字本身，不要解释、不要引号、不要 JSON、不要代码围栏。"
 )
 
 
@@ -244,7 +245,9 @@ class Pipeline:
 
         # --- optional VLM fallback (opt-in; PaddleOCR is the default OCR path) ---
         t_vlm, vlm_calls = time.perf_counter(), 0
-        all_items, vlm_calls, vlm_stats = self._maybe_vlm_fallback(img, all_items)
+        all_items, vlm_calls, vlm_stats = self._maybe_vlm_fallback(
+            img, all_items, for_verify=for_verify
+        )
         t_vlm = time.perf_counter() - t_vlm
 
         # --- final dedupe (paragraph blocks can still overlap at tile seams) ---
@@ -510,7 +513,7 @@ class Pipeline:
         return all_items, grid
 
     def _maybe_vlm_fallback(
-        self, img, items: list[Item]
+        self, img, items: list[Item], *, for_verify: bool = False
     ) -> tuple[list[Item], int, dict]:
         """Re-recognize hard text regions via the VLM: low-confidence crops AND
         circular/ring-shaped regions.
@@ -551,6 +554,24 @@ class Pipeline:
             return items, 0, {}
 
         threshold = self.settings.rec_confidence_fallback
+        # Floor below which sending a crop to the VLM is pure waste on the
+        # /analyze path: a box scoring under BOTH the /analyze drop floor
+        # (rec_confidence_drop) AND the universal cleanup floor
+        # (min_keep_confidence) will be discarded downstream regardless of what
+        # the VLM returns — the VLM no longer contributes to confidence (it's
+        # the pure PaddleOCR score), so a 0.40 box stays 0.40 and can't clear
+        # either floor. Skip the cloud call.
+        # /verify is EXEMPT from this floor: it runs cleanup with keep_short=True
+        # (low-confidence text is kept) because it needs every readable char to
+        # match required copy, so a low PaddleOCR box that the VLM CAN read is
+        # valuable there.
+        if for_verify:
+            vlm_floor = 0.0
+        else:
+            vlm_floor = max(
+                self.settings.rec_confidence_drop,
+                self.settings.min_keep_confidence,
+            )
 
         # --- circular regions: find rings first so their members can be pulled
         # out of the low-confidence suspect set (avoid double-sending). ---
@@ -565,11 +586,14 @@ class Pipeline:
             circle_member_idx.update(r.member_indices)
 
         # --- low-confidence suspects (excluding ring members) ---
+        # Only re-read boxes in [vlm_floor, threshold): below vlm_floor they'd
+        # be discarded anyway (pure waste of a cloud call); above threshold
+        # PaddleOCR is confident enough. Ring members are handled separately.
         suspect_idx = [
             i for i, it in enumerate(items)
             if it.type == "text"
             and it.source == "paddleocr"
-            and it.confidence < threshold
+            and vlm_floor <= it.confidence < threshold
             and i not in circle_member_idx
         ]
 
@@ -604,29 +628,30 @@ class Pipeline:
         # below; the aggregate counts stay complete regardless.
         crop_details: list[dict] = []
         # Low-confidence suspects: 1:1 text replacement.
-        for idx, (new_text, new_conf) in zip(suspect_idx, recognized[:len(suspect_idx)]):
+        # The VLM does text recognition only — it returns no usable score, so
+        # "success" = "non-empty text". Confidence is NEVER taken from the VLM:
+        # we keep the original PaddleOCR score for the box regardless. vlm_lifted
+        # thus means "the VLM produced a read" (True), not "it beat paddleocr".
+        for idx, (new_text, _new_conf) in zip(suspect_idx, recognized[:len(suspect_idx)]):
             it = out[idx]
             if new_text:
                 n_rescued += 1
-                # vlm_lifted: did the VLM actually beat the original PaddleOCR
-                # score? max() below keeps the higher value, but the /analyze
-                # confidence policy needs to know whether the VLM *improved*
-                # this box (True) or just agreed with a low score (False).
-                lifted = new_conf > it.confidence
                 out[idx] = it.model_copy(
                     update={
                         "text": new_text,
-                        "confidence": max(it.confidence, new_conf),
+                        # Confidence stays the original PaddleOCR score — the
+                        # VLM supplies text, not a trustworthy confidence.
                         "source": "vlm_fallback",
-                        "vlm_lifted": lifted,
+                        "vlm_lifted": True,
                     }
                 )
                 outcome = "rescued"
             else:
                 n_empty += 1
-                # VLM returned empty: flag as "went through VLM but not lifted"
-                # so the /analyze rule-2 drop policy can catch it. Don't touch
-                # text/confidence/source — keep the original PaddleOCR values.
+                # VLM returned empty (or its output was rejected as garbage):
+                # flag vlm_lifted=False so the /analyze rule-2 drop policy can
+                # catch it. Don't touch text/confidence/source — keep the
+                # original PaddleOCR values.
                 out[idx] = it.model_copy(update={"vlm_lifted": False})
                 outcome = "empty"
             crop_details.append({
@@ -635,14 +660,13 @@ class Pipeline:
                 "orig_text": it.text,
                 "orig_conf": round(float(it.confidence), 3),
                 "vlm_text": new_text,
-                "vlm_conf": round(float(new_conf), 3),
                 "outcome": outcome,
             })
         # Circular regions: the VLM read the WHOLE ring as one string. Put it on
         # the representative member (top-most by bbox y1); leave other members'
         # text alone so the ring string isn't duplicated across boxes.
         circle_results = recognized[len(suspect_idx):]
-        for region, (new_text, new_conf) in zip(circular, circle_results):
+        for region, (new_text, _new_conf) in zip(circular, circle_results):
             # Region bbox = union of member bboxes (for the UI to highlight).
             mb = [items[i].bbox for i in region.member_indices]
             rbox = [min(b[0] for b in mb), min(b[1] for b in mb),
@@ -656,7 +680,8 @@ class Pipeline:
                 out[rep] = out[rep].model_copy(
                     update={
                         "text": new_text,
-                        "confidence": max(out[rep].confidence, new_conf),
+                        # Confidence stays the original PaddleOCR score — the
+                        # VLM supplies text, not a trustworthy confidence.
                         "source": "vlm_fallback",
                     }
                 )
@@ -666,7 +691,6 @@ class Pipeline:
                 "orig_text": "(arc)",
                 "orig_conf": None,
                 "vlm_text": new_text,
-                "vlm_conf": round(float(new_conf), 3),
                 "outcome": outcome,
                 "members": len(region.member_indices),
             })
@@ -785,11 +809,12 @@ class Pipeline:
 
         1. FINAL confidence < ``rec_confidence_drop`` (default 0.60), regardless
            of VLM involvement.
-        2. Sent to the VLM but NOT lifted (``vlm_lifted is False``: new_conf
-           <= original, or the VLM returned empty), AND final confidence <
-           ``rec_confidence_vlm_drop`` (default 0.85). Catches boxes the VLM
-           looked at and couldn't improve — a weaker signal than one it never
-           needed to look at.
+        2. Sent to the VLM but it produced no text (``vlm_lifted is False``:
+           the VLM returned empty/garbage), AND confidence <
+           ``rec_confidence_vlm_drop`` (default 0.85). Since the VLM no longer
+           contributes to ``confidence`` (it's the pure PaddleOCR score), this
+           simply drops boxes where BOTH paddleocr was unsure AND the VLM
+           couldn't read it either. Catches boxes nobody could read.
 
         Only ``type == "text"`` items are dropped — qr/barcode confidence has
         different semantics and those decoded payloads are valuable regardless
@@ -808,7 +833,12 @@ class Pipeline:
             it for it in items
             if it.type != "text"
             or (
+                # Rule 1: confidence (pure PaddleOCR score — the VLM no longer
+                # contributes to it) must clear the floor.
                 it.confidence >= drop
+                # Rule 2: a box the VLM looked at but couldn't read
+                # (``vlm_lifted is False``) AND the PaddleOCR score is also
+                # below vlm_drop — nobody could read it confidently.
                 and not (it.vlm_lifted is False and it.confidence < vlm_drop)
             )
         ]

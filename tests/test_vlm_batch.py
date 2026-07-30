@@ -152,21 +152,27 @@ def test_pipeline_vlm_fallback_uses_batch(monkeypatch):
     pipe = Pipeline(Settings())
 
     # Force-enable both VLM switches and a high threshold so items qualify.
+    # Pin the floors explicitly so the test is stable regardless of .env.
     s = pipe.settings.model_copy(update={
         "vlm_enabled": True,
         "vlm_ocr_fallback_enabled": True,
         "rec_confidence_fallback": 0.99,
+        "rec_confidence_drop": 0.60,
+        "min_keep_confidence": 0.60,
     })
     pipe.settings = s
 
     # Two suspect items + one confident one (should NOT be re-recognized).
+    # Suspects must sit in [vlm_floor, threshold) = [0.60, 0.99): below the
+    # floor they'd be discarded anyway (no point re-reading), at/above the
+    # threshold PaddleOCR is confident.
     items = [
         Item(id="t1", type="text", text="?", polygon=[[10, 10], [30, 10], [30, 30], [10, 30]],
-             bbox=[10, 10, 30, 30], confidence=0.3, source="paddleocr"),
+             bbox=[10, 10, 30, 30], confidence=0.70, source="paddleocr"),
         Item(id="t2", type="text", text="ok", polygon=[[40, 40], [60, 40], [60, 60], [40, 60]],
              bbox=[40, 40, 60, 60], confidence=0.99, source="paddleocr"),  # confident, skipped
         Item(id="t3", type="text", text="?", polygon=[[70, 70], [90, 70], [90, 90], [70, 90]],
-             bbox=[70, 70, 90, 90], confidence=0.2, source="paddleocr"),
+             bbox=[70, 70, 90, 90], confidence=0.80, source="paddleocr"),
     ]
 
     calls = {"batch": 0, "crops": []}
@@ -206,18 +212,21 @@ def test_pipeline_vlm_fallback_logs_sent_rescued_empty(monkeypatch, caplog):
         "vlm_enabled": True,
         "vlm_ocr_fallback_enabled": True,
         "rec_confidence_fallback": 0.99,
+        "rec_confidence_drop": 0.60,
+        "min_keep_confidence": 0.60,
         "circular_detect_enabled": False,  # keep this test about suspects only
     })
     pipe.settings = s
 
-    # 3 suspects: 2 will be rescued, 1 comes back empty.
+    # 3 suspects: 2 will be rescued, 1 comes back empty. All must sit in
+    # [vlm_floor, threshold) = [0.60, 0.99) to qualify for re-reading.
     items = [
         Item(id="t1", type="text", text="?", polygon=[[0, 0], [9, 0], [9, 9], [0, 9]],
-             bbox=[0, 0, 9, 9], confidence=0.1, source="paddleocr"),
+             bbox=[0, 0, 9, 9], confidence=0.70, source="paddleocr"),
         Item(id="t2", type="text", text="?", polygon=[[0, 0], [9, 0], [9, 9], [0, 9]],
-             bbox=[0, 0, 9, 9], confidence=0.2, source="paddleocr"),
+             bbox=[0, 0, 9, 9], confidence=0.75, source="paddleocr"),
         Item(id="t3", type="text", text="?", polygon=[[0, 0], [9, 0], [9, 9], [0, 9]],
-             bbox=[0, 0, 9, 9], confidence=0.3, source="paddleocr"),
+             bbox=[0, 0, 9, 9], confidence=0.80, source="paddleocr"),
     ]
 
     class _FakeVLM:
@@ -241,16 +250,96 @@ def test_pipeline_vlm_fallback_logs_sent_rescued_empty(monkeypatch, caplog):
     assert "threshold=0.99" in line
 
 
+def test_pipeline_vlm_fallback_skips_below_floor(monkeypatch):
+    """Boxes scoring below max(rec_confidence_drop, min_keep_confidence) are
+    NOT sent to the VLM on the /analyze path — they'd be discarded downstream
+    regardless of what the VLM returns (confidence stays the PaddleOCR score)."""
+    pipe = Pipeline(Settings())
+    s = pipe.settings.model_copy(update={
+        "vlm_enabled": True,
+        "vlm_ocr_fallback_enabled": True,
+        "rec_confidence_fallback": 0.99,
+        # floors: drop=0.60, min_keep=0.60 → vlm_floor=0.60
+        "rec_confidence_drop": 0.60,
+        "min_keep_confidence": 0.60,
+        "circular_detect_enabled": False,
+    })
+    pipe.settings = s
+
+    items = [
+        # 0.50 < vlm_floor 0.60 → NOT sent (would be dropped anyway).
+        Item(id="low", type="text", text="?", polygon=[[0, 0], [9, 0], [9, 9], [0, 9]],
+             bbox=[0, 0, 9, 9], confidence=0.50, source="paddleocr"),
+        # 0.70 in [0.60, 0.99) → sent.
+        Item(id="mid", type="text", text="?", polygon=[[0, 0], [9, 0], [9, 9], [0, 9]],
+             bbox=[0, 0, 9, 9], confidence=0.70, source="paddleocr"),
+    ]
+
+    calls = {"crops": []}
+
+    class _FakeVLM:
+        def recognize_crops_with_prompts_batch(self, image, crops):
+            calls["crops"] = crops
+            return [("READ", 1.0)] * len(crops)
+
+    monkeypatch.setattr(pipe, "_get_vlm", lambda: _FakeVLM())
+
+    out, n_crops, _stats = pipe._maybe_vlm_fallback(_img(), items)
+
+    assert n_crops == 1                      # only the mid box sent
+    assert len(calls["crops"]) == 1
+    # The low box was left untouched (not re-read).
+    assert out[0].source == "paddleocr" and out[0].text == "?"
+    # The mid box was re-read.
+    assert out[1].source == "vlm_fallback" and out[1].text == "READ"
+
+
+def test_pipeline_vlm_fallback_floor_exempt_for_verify(monkeypatch):
+    """On the /verify path the floor is disabled — a low-confidence box the VLM
+    CAN read is valuable there (every char may match required copy)."""
+    pipe = Pipeline(Settings())
+    s = pipe.settings.model_copy(update={
+        "vlm_enabled": True,
+        "vlm_ocr_fallback_enabled": True,
+        "rec_confidence_fallback": 0.99,
+        "rec_confidence_drop": 0.60,
+        "min_keep_confidence": 0.60,
+        "circular_detect_enabled": False,
+    })
+    pipe.settings = s
+
+    items = [
+        # 0.50 < the /analyze floor, but verify path sends it anyway.
+        Item(id="low", type="text", text="?", polygon=[[0, 0], [9, 0], [9, 9], [0, 9]],
+             bbox=[0, 0, 9, 9], confidence=0.50, source="paddleocr"),
+    ]
+
+    calls = {"crops": []}
+
+    class _FakeVLM:
+        def recognize_crops_with_prompts_batch(self, image, crops):
+            calls["crops"] = crops
+            return [("READ", 1.0)] * len(crops)
+
+    monkeypatch.setattr(pipe, "_get_vlm", lambda: _FakeVLM())
+
+    out, n_crops, _stats = pipe._maybe_vlm_fallback(_img(), items, for_verify=True)
+
+    assert n_crops == 1                      # the low box WAS sent (verify)
+    assert out[0].source == "vlm_fallback" and out[0].text == "READ"
+
+
 # ---------------------------------------------------------------------------
 # Pipeline._drop_low_confidence — /analyze confidence policy (drop < threshold)
 # ---------------------------------------------------------------------------
 
 
-def _text_item(id_, conf, source="paddleocr"):
+def _text_item(id_, conf, source="paddleocr", vlm_lifted=None):
     return Item(
         id=id_, type="text", text=f"t{id_}",
         polygon=[[0, 0], [10, 0], [10, 10], [0, 10]],
         bbox=[0, 0, 10, 10], confidence=conf, source=source,
+        vlm_lifted=vlm_lifted,
     )
 
 
@@ -328,15 +417,103 @@ def test_drop_low_confidence_clamped_when_drop_above_fallback():
     assert {it.id for it in kept} == {"t2"}
 
 
+def test_drop_low_confidence_rule2_drops_vlm_failed_low_paddleocr():
+    """Rule 2 drops a box the VLM couldn't read (vlm_lifted=False) when its
+    PaddleOCR confidence is also below rec_confidence_vlm_drop.
+
+    Since the VLM no longer contributes to confidence (it's the pure PaddleOCR
+    score), this catches boxes nobody could read confidently.
+    """
+    s = Settings().model_copy(update={
+        "rec_confidence_drop": 0.60,
+        "rec_confidence_fallback": 0.94,
+        "rec_confidence_vlm_drop": 0.85,
+    })
+    pipe = Pipeline(s)
+    items = [
+        # VLM failed AND paddleocr only 0.70 (< vlm_drop 0.85) → dropped.
+        _text_item("drop", 0.70, source="vlm_fallback", vlm_lifted=False),
+        # VLM failed but paddleocr 0.90 (>= vlm_drop 0.85) → kept.
+        _text_item("keep", 0.90, source="vlm_fallback", vlm_lifted=False),
+    ]
+    kept = pipe._drop_low_confidence(items)
+    assert {it.id for it in kept} == {"keep"}
+
+
+def test_drop_low_confidence_rule2_inert_when_not_sent_to_vlm():
+    """Items that never went through the VLM (vlm_lifted=None) are never
+    affected by rule 2 — only rule 1 (the plain confidence floor) applies."""
+    s = Settings().model_copy(update={
+        "rec_confidence_drop": 0.60,
+        "rec_confidence_fallback": 0.94,
+        "rec_confidence_vlm_drop": 0.85,
+    })
+    pipe = Pipeline(s)
+    items = [
+        # vlm_lifted=None: rule 2 inert. conf 0.70 >= drop 0.60 → kept, even
+        # though 0.70 < vlm_drop 0.85 (rule 2 doesn't fire).
+        _text_item("t1", 0.70, vlm_lifted=None),
+        # Same but below the rule-1 floor → dropped by rule 1.
+        _text_item("t2", 0.50, vlm_lifted=None),
+    ]
+    kept = pipe._drop_low_confidence(items)
+    assert {it.id for it in kept} == {"t1"}
+
+
 # ---------------------------------------------------------------------------
-# Min-crop-side guard — undersized crops must be skipped, not sent to the VLM
-# (DashScope returns HTTP 400 for <10px images, which would otherwise poison
-# the whole batch via the batch wrapper's fail-fast semantics).
+# _clean_vlm_text — VLM output normalization (text recognition, no score)
 # ---------------------------------------------------------------------------
+
+
+def test_clean_vlm_text_plain_text():
+    """Plain text is returned trimmed, with stray surrounding quotes stripped."""
+    from app.vlm.qwen import _clean_vlm_text
+    assert _clean_vlm_text("能量宇宙 擎天柱") == "能量宇宙 擎天柱"
+    assert _clean_vlm_text('"hello"') == "hello"
+    assert _clean_vlm_text("  spaced  ") == "spaced"
+
+
+def test_clean_vlm_text_empty_or_empty_sentinel():
+    """Empty / EMPTY responses return None (treated as a failed read)."""
+    from app.vlm.qwen import _clean_vlm_text
+    assert _clean_vlm_text("") is None
+    assert _clean_vlm_text("   ") is None
+    assert _clean_vlm_text("EMPTY") is None
+    assert _clean_vlm_text("empty") is None
+
+
+def test_clean_vlm_text_rejects_fenced_json():
+    """A ```json-fenced block is treated as a failed read → None.
+
+    Reproduces the original bug: the VLM ignored the plain-text format and
+    emitted a fenced JSON block; it must NOT be returned verbatim as text.
+    """
+    from app.vlm.qwen import _clean_vlm_text
+    raw = '```json\n{\n    "text": "能量宇宙 擎天柱",\n    "score": 0.0\n}\n```'
+    assert _clean_vlm_text(raw) is None
+
+
+def test_clean_vlm_text_rejects_bare_json_with_text_key():
+    """A bare JSON object (no fence) carrying a 'text'/'score' key is also
+    rejected — the model treated its answer as structured output."""
+    from app.vlm.qwen import _clean_vlm_text
+    assert _clean_vlm_text('{"text": "X", "score": 0.9}') is None
+    assert _clean_vlm_text('{"score": 0.5}') is None
+
+
+def test_clean_vlm_text_keeps_unrelated_json():
+    """JSON-like text WITHOUT a text/score key is NOT rejected — it could be a
+    legitimate OCR of content that happens to look like JSON."""
+    from app.vlm.qwen import _clean_vlm_text
+    assert _clean_vlm_text('{"price": 9.9}') == '{"price": 9.9}'
+
+
 
 
 def _stub_client_tracking_calls(vlm: QwenVLM):
-    """Record each create() call; return ("TEXT", 0.8) on every invocation."""
+    """Record each create() call; return content "TEXT" on every invocation.
+    (recognize_crop_with_prompt then yields ("TEXT", 1.0) — the 1.0 is a
+    placeholder; the VLM no longer supplies a usable score.)"""
     calls = {"n": 0}
 
     class _Create:
@@ -385,7 +562,7 @@ def test_recognize_crop_with_prompt_skips_undersized():
         img, _poly(10, 10, 26, 26), prompt="read"
     )
     assert text == "TEXT"
-    assert conf == 0.8
+    assert conf == 1.0  # placeholder; the VLM no longer supplies a usable score
     assert calls["n"] == 1
 
 
@@ -417,9 +594,9 @@ def test_recognize_crops_with_prompts_batch_skips_undersized_silently():
     results = vlm.recognize_crops_with_prompts_batch(img, crops)
 
     assert len(results) == 3
-    assert results[0] == ("TEXT", 0.8)   # OK crop recognized
+    assert results[0] == ("TEXT", 1.0)   # OK crop recognized (1.0 = placeholder)
     assert results[1] == ("", 0.0)       # undersized → empty, no exception
-    assert results[2] == ("TEXT", 0.8)   # OK crop recognized
+    assert results[2] == ("TEXT", 1.0)   # OK crop recognized (1.0 = placeholder)
 
 
 def test_recognize_crop_skips_undersized():

@@ -117,34 +117,31 @@ class VLMProvider(abc.ABC):
 
         data_url = _to_b64_jpeg(image[y1:y2, x1:x2])
         # Tag the log with which prompt path this is — suspects use the
-        # built-in art-text prompt (self-rating), rings use the arc prompt.
+        # built-in art-text prompt, rings use the arc prompt.
         from .qwen import _PROMPT
         kind = "suspect" if prompt == _PROMPT else "ring"
         raw, _conf = self.ask_image(
             data_url, prompt, max_tokens=512, json_mode=False
         )
-        raw = (raw or "").strip()
-        if not raw or raw.upper() == "EMPTY":
+        # The VLM does text recognition only — no self-rated score. _clean_vlm_text
+        # returns None for empty / EMPTY / JSON-fenced garbage, else the text.
+        from .qwen import _clean_vlm_text
+        text = _clean_vlm_text(raw)
+        if text is None:
             logger.info(
-                "recognize_crop_with_prompt: %s bbox=[%d,%d,%d,%d] %dx%d -> EMPTY",
-                kind, x1, y1, x2, y2, x2 - x1, y2 - y1,
+                "recognize_crop_with_prompt: %s bbox=[%d,%d,%d,%d] %dx%d -> "
+                "EMPTY/garbage (raw=%r)",
+                kind, x1, y1, x2, y2, x2 - x1, y2 - y1, (raw or "")[:80],
             )
             return "", 0.0
-        # Strip a leading/trailing quote the model sometimes adds.
-        import re
-        text = re.sub(r"^['\"]|['\"]$", "", raw)
-        # The self-rating prompt appends "||<score>"; parse it into a real
-        # confidence. Idempotent for prompts that don't ask for a score (no
-        # "||" present → falls back to 0.8, unchanged behavior).
-        from .qwen import _parse_self_rated
-        text, score = _parse_self_rated(text)
+        # Confidence is a placeholder: the pipeline ignores it and keeps the
+        # original PaddleOCR score for this box. 1.0 just signals "read OK".
         logger.info(
             "recognize_crop_with_prompt: %s bbox=[%d,%d,%d,%d] %dx%d -> "
-            "text=%r conf=%.2f (raw=%r)",
-            kind, x1, y1, x2, y2, x2 - x1, y2 - y1,
-            text[:80], score, raw[:80],
+            "text=%r (raw=%r)",
+            kind, x1, y1, x2, y2, x2 - x1, y2 - y1, text[:80], (raw or "")[:80],
         )
-        return text, score
+        return text, 1.0
 
     def recognize_crops_with_prompts_batch(
         self,

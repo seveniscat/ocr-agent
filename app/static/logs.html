@@ -317,7 +317,6 @@ function renderFallbackCrops(crops, totalSent, shownCount) {
     const vlmText = c.vlm_text
       ? `<span class="crop-text">${escapeHtml(c.vlm_text)}</span>`
       : `<span class="crop-empty">(空)</span>`;
-    const vlmConf = c.vlm_conf != null && c.vlm_conf > 0 ? `<span class="crop-conf">${c.vlm_conf.toFixed(2)}</span>` : "";
     const outcomeCls = c.outcome === "rescued" ? "out-rescued" : "out-empty";
     const outcomeLabel = c.outcome === "rescued" ? "✓ 救回" : "✗ 空";
     // "Changed" only makes sense for suspects (where there WAS an original text
@@ -330,7 +329,7 @@ function renderFallbackCrops(crops, totalSent, shownCount) {
       <td class="num crop-box">${box}</td>
       <td>${orig}${origConf}</td>
       <td class="crop-arrow-cell">${arrow}</td>
-      <td>${vlmText}${vlmConf}</td>
+      <td>${vlmText}</td>
       <td class="${outcomeCls}">${outcomeLabel}</td>
     </tr>`;
   }).join("");
