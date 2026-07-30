@@ -43,17 +43,31 @@ def _parse_self_rated(text: str) -> tuple[str, float]:
     regression can't quietly filter out good results.
 
     ``rpartition`` is used so a text body that itself contains ``||`` keeps its
-    earlier occurrences (only the final ``||<score>`` is split off).
+    earlier occurrences (only the final ``||<score>`` is split off). When the
+    suffix isn't a clean float (e.g. ``0.95）``, ``置信度0.95``, trailing
+    punctuation), a regex extracts the last float in the suffix as a second
+    chance before falling back.
     """
     if _CONF_SEP in text:
         body, _, tail = text.rpartition(_CONF_SEP)
         body = body.strip()
+        tail = tail.strip()
         try:
-            score = float(tail.strip())
+            score = float(tail)
             if 0.0 <= score <= 1.0:
                 return body, score
         except ValueError:
             pass
+        # Second chance: the suffix has a float buried in prose/punctuation
+        # (e.g. "0.95）", "置信度0.95", "0.95."). Pull the last float out.
+        m = re.findall(r"\d+\.?\d*", tail)
+        if m:
+            try:
+                score = float(m[-1])
+                if 0.0 <= score <= 1.0:
+                    return body, score
+            except ValueError:
+                pass
     # Model didn't emit a parseable "||<score>" suffix — fall back. Logging
     # here surfaces prompt-compliance regressions (e.g. the model ignoring the
     # self-rating instruction) without dropping the recognized text.
@@ -153,11 +167,17 @@ class QwenVLM(VLMProvider):
         (``self._enable_thinking``) when ``None``.
 
         Confidence is a flat 0.8 placeholder: Qwen-VL gives no native score, so
-        this method returns a constant. Callers that need a real score use the
-        self-rating prompt (``_PROMPT``) and :func:`_parse_self_rated` via
-        ``recognize_crop`` / ``recognize_crop_with_prompt``, which parse a
-        ``text||score`` response. Every current ``ask_image`` caller discards
-        the returned confidence (``_conf``), so the placeholder is harmless.
+        this method returns a constant. Callers that need a real score use a
+        self-rating prompt and parse the response themselves:
+
+        - art-text / circular fallback (``_PROMPT`` / ``_CIRCULAR_PROMPT``)
+          append ``||score`` and parse it via :func:`_parse_self_rated`;
+        - VLM grounding OCR (``_OCR_PROMPT``) embeds a per-item ``confidence``
+          field in its JSON, parsed in ``vlm_ocr._norm_confidence``.
+
+        Every current ``ask_image`` caller discards the returned confidence
+        (``_conf``), so the placeholder is harmless — the real score lives in
+        the response text the caller parses.
         """
         want_thinking = (
             self._enable_thinking if enable_thinking is None else enable_thinking

@@ -74,7 +74,8 @@ _OCR_PROMPT = """你是一个包装图像 OCR 与定位专家。请仔细观察�
       "type": "text | art_text | qr | barcode",
       "text": "识别出的文字内容（text/art_text 用此字段）",
       "content": "条码/二维码解码内容（qr/barcode 用此字段；无法解码则省略）",
-      "bbox": [x1, y1, x2, y2]
+      "bbox": [x1, y1, x2, y2],
+      "confidence": 0.0到1.0的浮点数
     }
   ]
 }
@@ -85,6 +86,8 @@ _OCR_PROMPT = """你是一个包装图像 OCR 与定位专家。请仔细观察�
 - 同一行文字应作为一个 text 框（行级），不要拆成单字。
 - text/art_text 用 "text" 字段；qr/barcode 用 "content" 字段（若无法解码可不填或留空）。
 - 坐标尽量贴合元素边界，不要框得过大。
+- 文字必须严格照抄图中原文，不可补全、纠正或臆测不可读的字符；看不清的字用 confidence 反映，不要瞎猜内容。
+- confidence 是你对这个识别结果（文字内容和 bbox）的真实把握程度：0.9+ 表示文字清晰、边界明确；0.6-0.9 表示部分模糊但可辨；0.6 以下表示很不确定。必须如实自评，不要一律给高分。
 - 只输出 JSON 对象本身，不要任何解释文字、不要 markdown 代码围栏。"""
 
 
@@ -117,7 +120,11 @@ def run_vlm_ocr(
     """
     h, w = img.shape[:2]
     model = settings.vlm_ocr_model or settings.vlm_model
-    confidence = settings.vlm_ocr_confidence
+    # Fallback confidence handed to items whose self-rated score is missing.
+    # Deliberately low (default 0.5) so a model that ignores the self-rating
+    # instruction produces low-quality items the /analyze policy will filter,
+    # rather than silently trusting them.
+    fallback_conf = settings.vlm_ocr_confidence
     codes = _get_codes_or_none(settings)
     all_items: list[Item] = []
 
@@ -128,18 +135,19 @@ def run_vlm_ocr(
         try:
             raw_items = _detect_from_url(
                 vlm, image_url, model=model, img_w=w, img_h=h,
+                fallback_conf=fallback_conf,
             )
         except Exception as exc:  # noqa: BLE001 — best-effort
             logger.warning("vlm_ocr: whole-image VLM call failed: %s", exc)
             raw_items = []
 
-        for itype, payload, norm in raw_items:
+        for itype, payload, norm, conf in raw_items:
             # norm is canonical [x1,y1,x2,y2] in [0,1] → scale to full image px.
             x1, y1 = norm[0] * w, norm[1] * h
             x2, y2 = norm[2] * w, norm[3] * h
             quad = [[x1, y1], [x2, y1], [x2, y2], [x1, y2]]
             all_items.append(
-                _build_item(itype, payload, quad, confidence, None)
+                _build_item(itype, payload, quad, conf, None)
             )
 
         # pyzbar on the whole image (reliable decoding, complements VLM boxes).
@@ -184,20 +192,23 @@ def run_vlm_ocr(
         tile = crop_tile(img, spec)
         th, tw = tile.shape[:2]
         try:
-            raw_items = _detect_tile(vlm, tile, model=model, max_side=max_side)
+            raw_items = _detect_tile(
+                vlm, tile, model=model, max_side=max_side,
+                fallback_conf=fallback_conf,
+            )
         except Exception as exc:  # noqa: BLE001 — best-effort per tile
             logger.warning(
                 "vlm_ocr: tile %d VLM call failed, skipping: %s", spec.index, exc
             )
             raw_items = []
 
-        for itype, payload, norm in raw_items:
+        for itype, payload, norm, conf in raw_items:
             x1, y1 = norm[0] * tw, norm[1] * th
             x2, y2 = norm[2] * tw, norm[3] * th
             quad = [[x1, y1], [x2, y1], [x2, y2], [x1, y2]]
             global_poly = offset_polygon(quad, spec.x0, spec.y0)
             all_items.append(
-                _build_item(itype, payload, global_poly, confidence, spec.index)
+                _build_item(itype, payload, global_poly, conf, spec.index)
             )
 
         if codes is not None:
@@ -242,12 +253,15 @@ def _detect_tile(
     *,
     model: str,
     max_side: int,
-) -> list[tuple[str, str, list[float]]]:
+    fallback_conf: float = 0.5,
+) -> list[tuple[str, str, list[float], float]]:
     """Ground all elements in one tile via the VLM.
 
-    Returns a list of ``(type, payload, norm_bbox)`` where ``payload`` is the
-    text (for text/art_text) or decoded content (for qr/barcode), and
-    ``norm_bbox`` is ``[x1,y1,x2,y2]`` in 0–1 fractions of the tile.
+    Returns a list of ``(type, payload, norm_bbox, confidence)`` where
+    ``payload`` is the text (for text/art_text) or decoded content (for
+    qr/barcode), ``norm_bbox`` is ``[x1,y1,x2,y2]`` in 0–1 fractions of the
+    tile, and ``confidence`` is the model's self-rated score (or
+    ``fallback_conf`` when the model didn't emit one).
 
     Raises whatever the VLM call raises — the caller wraps that per-tile.
     """
@@ -257,7 +271,9 @@ def _detect_tile(
         data_url, _OCR_PROMPT, max_tokens=8192, json_mode=True,
         model_override=model or None,
     )
-    return _parse_ocr_items(raw, img_w=tw, img_h=th)
+    return _parse_ocr_items(
+        raw, img_w=tw, img_h=th, fallback_conf=fallback_conf,
+    )
 
 
 def _detect_from_url(
@@ -267,13 +283,15 @@ def _detect_from_url(
     model: str,
     img_w: int = 0,
     img_h: int = 0,
-) -> list[tuple[str, str, list[float]]]:
+    fallback_conf: float = 0.5,
+) -> list[tuple[str, str, list[float], float]]:
     """Ground all elements in a whole image via a public URL.
 
     Passes ``image_url`` straight to the VLM (the OpenAI-compatible endpoint
     fetches it server-side) — no tiling, no base64. Returns ``(type, payload,
-    norm_bbox)`` with ``norm_bbox`` in 0–1 fractions of the whole image. The
-    caller scales by the image's pixel dimensions.
+    norm_bbox, confidence)`` with ``norm_bbox`` in 0–1 fractions of the whole
+    image and ``confidence`` the model's self-rated score (or ``fallback_conf``
+    when missing). The caller scales by the image's pixel dimensions.
 
     Raises whatever the VLM call raises — the caller wraps it.
     """
@@ -285,7 +303,9 @@ def _detect_from_url(
         image_url, _OCR_PROMPT, max_tokens=8192, json_mode=True,
         model_override=model or None,
     )
-    return _parse_ocr_items(raw, img_w=img_w, img_h=img_h)
+    return _parse_ocr_items(
+        raw, img_w=img_w, img_h=img_h, fallback_conf=fallback_conf,
+    )
 
 
 def _parse_ocr_items(
@@ -293,14 +313,21 @@ def _parse_ocr_items(
     *,
     img_w: int = 0,
     img_h: int = 0,
-) -> list[tuple[str, str, list[float]]]:
-    """Parse VLM output into ``(type, payload, norm_bbox)`` triples.
+    fallback_conf: float = 0.5,
+) -> list[tuple[str, str, list[float], float]]:
+    """Parse VLM output into ``(type, payload, norm_bbox, confidence)`` tuples.
 
     Tolerant of: markdown fences / prose preamble, truncated JSON (recovers
     complete items before the cut), ``bbox`` as pixel coords vs normalized
     (auto-detects: when values exceed ~1.5 they're treated as pixels and
     divided by ``img_w``/``img_h``), swapped corners, and values slightly
     outside [0,1] (clamped). Unknown types / bbox-less entries are dropped.
+
+    ``confidence`` is read from each item's ``confidence`` field (clamped to
+    [0,1]). When the model omits it or gives a non-numeric value, we fall back
+    to ``fallback_conf`` — a deliberately low default so items from a model
+    that ignores the self-rating instruction are treated as low-quality (and
+    filtered by the /analyze confidence policy) rather than silently trusted.
     """
     items = _extract_items(raw)
     if not items:
@@ -321,7 +348,7 @@ def _parse_ocr_items(
             except (TypeError, ValueError):
                 continue
 
-    out: list[tuple[str, str, list[float]]] = []
+    out: list[tuple[str, str, list[float], float]] = []
     for e in items:
         if not isinstance(e, dict):
             continue
@@ -338,8 +365,28 @@ def _parse_ocr_items(
             payload = str(e.get("content") or e.get("text") or "").strip()
         else:
             payload = str(e.get("text") or e.get("content") or "").strip()
-        out.append((itype, payload, norm))
+        conf = _norm_confidence(e.get("confidence"), fallback_conf)
+        out.append((itype, payload, norm, conf))
     return out
+
+
+def _norm_confidence(v, fallback: float = 0.5) -> float:
+    """Coerce a VLM item's self-rated confidence to a float in [0, 1].
+
+    Returns ``fallback`` when ``v`` is missing/non-numeric/out of range. The
+    fallback is intentionally low (default 0.5) so a model that ignores the
+    self-rating instruction produces items the /analyze policy will treat as
+    low-quality rather than silently trusting them.
+    """
+    if v is None:
+        return fallback
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return fallback
+    if not (0.0 <= f <= 1.0):
+        return fallback
+    return f
 
 
 def _extract_items(raw: str) -> list[dict]:

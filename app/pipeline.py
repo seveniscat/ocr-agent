@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import base64
 import logging
+import re
 import time
 
 from .config import Settings
@@ -40,7 +41,9 @@ _CIRCULAR_PROMPT = (
     "这是包装上沿圆弧/环形排布的文字（圆形 logo、印章、徽章上的弧形文字）。"
     "请按顺时针方向，从顶部（12 点钟方向）开始，原样读出环上所有可见文字。"
     "用 / 分隔各段弧形文字（如顶部和底部是两段）。"
-    "只输出文字本身，不要解释、不要引号。如果该区域没有文字，只输出: EMPTY"
+    "看不清的字不要瞎猜，用你对识别结果的真实把握程度反映。"
+    "输出格式：<文字>||<置信度>，置信度 0.0-1.0（例如 顶部文字/底部文字||0.9）。"
+    "不要解释、不要引号。如果该区域没有文字，只输出: EMPTY"
 )
 
 
@@ -122,6 +125,7 @@ class Pipeline:
         image_url: str | None = None,
         confidence_policy: bool = False,
         stats_sink: dict | None = None,
+        for_verify: bool = False,
     ) -> AnalyzeResponse:
         # ``stats_sink`` (when provided by the caller) collects the same numbers
         # already emitted via logger.info, so the /logs Web UI can render a
@@ -250,6 +254,18 @@ class Pipeline:
             merge_y_thres=merge_y,
         )
 
+        # --- universal content-quality cleanup (ALL paths). Runs before the
+        # confidence policy so the policy operates on already-clean items. Drops
+        # empty-text, unrecognized, junk-short, and low-confidence text items so
+        # every caller — sync /analyze, async /analyze, even /verify — gets clean
+        # results. /verify opts out of the short-text/low-confidence cuts
+        # (keep_short=True) because it needs every recognizable char to match
+        # required copy, but empty/unrecognized boxes still go (they contribute
+        # zero chars to matching). qr/barcode are never touched here. ---
+        n_before_clean = len(all_items)
+        all_items = self._clean_items(all_items, keep_short=for_verify)
+        n_cleaned = n_before_clean - len(all_items)
+
         # --- confidence policy (POST /analyze only): drop text boxes whose FINAL
         # confidence is still below rec_confidence_drop after the VLM fallback
         # pass. VLM re-read happens above, so a box the VLM rescued above the
@@ -288,9 +304,10 @@ class Pipeline:
         logger.info(
             "pipeline.run: %dx%d→%dx%d tiles=%d items=%d→%d "
             "preprocess=%.2fs ocr=%.2fs boxes=det/rec=%d/%d "
-            "vlm(crops=%d)=%.2fs dedupe=%.2fs drop=%d total=%.2fs",
+            "vlm(crops=%d)=%.2fs dedupe=%.2fs clean=%d drop=%d total=%.2fs",
             orig_w, orig_h, w, h, grid.count, n_after_ocr, len(all_items),
-            t_pre, t_ocr, _bd, _br, vlm_calls, t_vlm, t_dedup, n_dropped, t_total,
+            t_pre, t_ocr, _bd, _br, vlm_calls, t_vlm, t_dedup, n_cleaned,
+            n_dropped, t_total,
         )
 
         response = AnalyzeResponse(
@@ -669,6 +686,80 @@ class Pipeline:
             "threshold": threshold,
             "crops": crop_details[:CAPACITY_CROPS],
         }
+
+    def _clean_items(
+        self, items: list[Item], *, keep_short: bool = False
+    ) -> list[Item]:
+        """Universal content-quality cleanup. Runs on ALL paths.
+
+        Drops text/art_text items that are empty, unrecognized, junk-short, or
+        low-confidence, so every caller receives clean, high-confidence results
+        without filtering themselves. qr/barcode are NEVER dropped here (decoded
+        payloads are valuable regardless of score).
+
+        Rules (only ``type in (text, art_text)`` is considered):
+
+        1. Empty text — ``text`` is None or whitespace-only.
+        2. Unrecognized — ``recognized is False`` (detector boxed it but the
+           recognizer dropped it; text is empty, confidence is 0).
+        3. Junk-short (skipped when ``keep_short=True``) — after stripping
+           leading/trailing whitespace AND punctuation, fewer than
+           ``min_text_chars`` effective characters remain (e.g. '.', '，', '-',
+           a lone digit). Catches detector noise.
+        4. Low-confidence (skipped when ``keep_short=True``) — confidence below
+           ``min_keep_confidence`` (default 0.6).
+
+        ``keep_short=True`` is used by /verify, which needs every recognizable
+        character to match required copy (rules 3-4 exempt), but empty and
+        unrecognized boxes still go — they contribute zero chars to matching.
+        """
+        min_chars = self.settings.min_text_chars
+        min_conf = self.settings.min_keep_confidence
+        # Leading/trailing punctuation/whitespace to strip when measuring the
+        # "effective" character count for the junk-short rule. Broad on purpose:
+        # covers CJK + ASCII punctuation that detectors emit as standalone noise.
+        _edge_junk = re.compile(r"^[\s\W]+|[\s\W]+$", re.UNICODE)
+
+        kept: list[Item] = []
+        n_empty = n_unrec = n_short = n_low = 0
+        for it in items:
+            # qr/barcode: always keep, regardless of content or confidence.
+            if it.type not in ("text", "art_text"):
+                kept.append(it)
+                continue
+            # Rule 1: empty text.
+            if not it.text or not it.text.strip():
+                n_empty += 1
+                continue
+            # Rule 2: unrecognized box.
+            if not it.recognized:
+                n_unrec += 1
+                continue
+            if not keep_short:
+                # Rule 3: junk-short text (noise like lone punctuation/digits).
+                if min_chars > 0:
+                    effective = _edge_junk.sub("", it.text)
+                    if len(effective) < min_chars:
+                        n_short += 1
+                        continue
+                # Rule 4: below universal minimum confidence.
+                if min_conf > 0.0 and it.confidence < min_conf:
+                    n_low += 1
+                    continue
+            kept.append(it)
+
+        n_total = len(items) - len(kept)
+        if n_total:
+            rules = (
+                f"empty={n_empty} unrec={n_unrec}"
+                + ("" if keep_short else f" short={n_short} low={n_low}")
+            )
+            mode = "verify(keep_short)" if keep_short else "full"
+            logger.info(
+                "clean_items[%s]: dropped %d/%d text items (%s); qr/barcode kept",
+                mode, n_total, len(items), rules,
+            )
+        return kept
 
     def _drop_low_confidence(self, items: list[Item]) -> list[Item]:
         """Discard text items per the /analyze confidence policy.

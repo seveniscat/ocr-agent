@@ -78,6 +78,10 @@ if _cors_raw:
     _origins = (
         ["*"] if _cors_raw == "*" else [o.strip() for o in _cors_raw.split(",") if o.strip()]
     )
+    # allow_credentials=False when origins == "*": the CORS spec forbids
+    # credentialed requests with a wildcard origin, and these APIs don't use
+    # cookies/HTTP auth anyway. A specific allow-list can keep credentials on.
+    _wildcard = _origins == ["*"]
     # max_age=600: the browser caches the preflight (OPTIONS) result for 10 min,
     # so subsequent cross-origin requests skip the preflight entirely. This
     # shrinks the failure window for "occasional CORS errors" — they're almost
@@ -88,14 +92,14 @@ if _cors_raw:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=_origins,
-        allow_credentials=True,
+        allow_credentials=not _wildcard,
         allow_methods=["*"],
         allow_headers=["*"],
         max_age=_CORS_MAX_AGE,
     )
     logger.info(
-        "CORS allowed origins: %s (preflight cache: max_age=%ds)",
-        _origins, _CORS_MAX_AGE,
+        "CORS allowed origins: %s (credentials: %s, preflight cache: max_age=%ds)",
+        _origins, not _wildcard, _CORS_MAX_AGE,
     )
 else:
     logger.info("CORS disabled (OCR_CORS_ORIGINS empty)")
@@ -706,7 +710,7 @@ async def analyze(
             pipeline = _get_pipeline()
             resp = pipeline.run(
                 data, annotate=annotate, options=opt_obj, image_url=url,
-                stats_sink=stats_sink,
+                confidence_policy=True, stats_sink=stats_sink,
             )
             resp.task_id = resolved_id
             _set_task_progress(resolved_id, "done", 100, result=resp, error=None)
@@ -1029,7 +1033,9 @@ async def verify(
     pipeline = _get_pipeline()
     loop = asyncio.get_event_loop()
     resp = await loop.run_in_executor(
-        _ocr_executor, lambda: pipeline.run(data, annotate=False, options=opt_obj)
+        _ocr_executor, lambda: pipeline.run(
+            data, annotate=False, options=opt_obj, for_verify=True,
+        )
     )
 
     th = Thresholds(

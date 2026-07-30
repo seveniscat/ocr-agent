@@ -172,6 +172,27 @@ class Settings(BaseSettings):
                     "never went through the VLM, are unaffected by this rule. /analyze "
                     "only; qr/barcode always kept.",
     )
+    min_text_chars: int = Field(
+        2, ge=0, le=50,
+        description="Universal content-quality filter (all paths except /verify): "
+                    "a text/art_text item whose text, after stripping leading/"
+                    "trailing whitespace AND punctuation, has fewer than this many "
+                    "effective characters is dropped as noise (e.g. '.', '，', '-', "
+                    "a lone digit). Catches detector garbage that survives the "
+                    "confidence gate. Set 1 to keep single characters, 0 to disable. "
+                    "/verify is exempt (every char may match required copy). "
+                    "qr/barcode always kept.",
+    )
+    min_keep_confidence: float = Field(
+        0.6, ge=0.0, le=1.0,
+        description="Universal minimum confidence for text/art_text items, applied "
+                    "on ALL paths (including async /analyze and /verify-bypass "
+                    "paths) — not just the synchronous /analyze drop policy. Items "
+                    "below this are dropped so callers always receive high-confidence "
+                    "results regardless of entry point. Default 0.6 mirrors "
+                    "rec_confidence_drop; set 0.0 to disable. qr/barcode always kept. "
+                    "/verify is exempt.",
+    )
 
     # ---- Circular / ring-shaped text detection (hard region for line OCR) ----
     # Characters arranged on an arc (around logos, seals, badges, caps) break the
@@ -317,10 +338,16 @@ class Settings(BaseSettings):
                     "so precision is bounded by tile_target_size, not this.",
     )
     vlm_ocr_confidence: float = Field(
-        0.8, ge=0.0, le=1.0,
-        description="Flat confidence assigned to VLM-grounded items (Qwen-VL "
-                    "gives no native score). 0.8 mirrors the art-text fallback "
-                    "convention.",
+        0.5, ge=0.0, le=1.0,
+        description="Fallback confidence for VLM-grounded items when the model "
+                    "doesn't emit a self-rated score (the _OCR_PROMPT now asks "
+                    "for a per-item confidence). Deliberately low so items from "
+                    "a model that ignores the self-rating instruction are "
+                    "treated as low-quality and filtered by the /analyze "
+                    "confidence policy (rule 1: conf < rec_confidence_drop), "
+                    "rather than silently trusted. Raise it (e.g. back to 0.8) "
+                    "only if you want to retain VLM items even when they don't "
+                    "self-rate.",
     )
 
     # ---- OCR engine default ----
