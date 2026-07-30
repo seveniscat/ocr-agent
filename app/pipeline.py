@@ -263,7 +263,7 @@ class Pipeline:
         # required copy, but empty/unrecognized boxes still go (they contribute
         # zero chars to matching). qr/barcode are never touched here. ---
         n_before_clean = len(all_items)
-        all_items = self._clean_items(all_items, keep_short=for_verify)
+        all_items = self._clean_items(all_items, keep_short=for_verify, options=options)
         n_cleaned = n_before_clean - len(all_items)
 
         # --- confidence policy (POST /analyze only): drop text boxes whose FINAL
@@ -688,7 +688,8 @@ class Pipeline:
         }
 
     def _clean_items(
-        self, items: list[Item], *, keep_short: bool = False
+        self, items: list[Item], *, keep_short: bool = False,
+        options: "OCROptions | None" = None,
     ) -> list[Item]:
         """Universal content-quality cleanup. Runs on ALL paths.
 
@@ -712,9 +713,23 @@ class Pipeline:
         ``keep_short=True`` is used by /verify, which needs every recognizable
         character to match required copy (rules 3-4 exempt), but empty and
         unrecognized boxes still go — they contribute zero chars to matching.
+
+        ``options`` carries per-call overrides for rules 3-4
+        (``min_text_chars`` / ``min_keep_confidence``); a None field falls back
+        to the Settings (.env) default, so omitting them is backward compatible.
         """
-        min_chars = self.settings.min_text_chars
-        min_conf = self.settings.min_keep_confidence
+        # Per-call override → .env default. None on the option means "don't
+        # override" (use the server default), which keeps old callers working.
+        min_chars = (
+            options.min_text_chars
+            if options and options.min_text_chars is not None
+            else self.settings.min_text_chars
+        )
+        min_conf = (
+            options.min_keep_confidence
+            if options and options.min_keep_confidence is not None
+            else self.settings.min_keep_confidence
+        )
         # Leading/trailing punctuation/whitespace to strip when measuring the
         # "effective" character count for the junk-short rule. Broad on purpose:
         # covers CJK + ASCII punctuation that detectors emit as standalone noise.

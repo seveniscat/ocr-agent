@@ -68,6 +68,21 @@ class OCROptions(BaseModel):
         None, description="是否做文字行方向分类(旋转/倒置文字)。关闭→更快。",
     )
 
+    # ---- content-quality cleanup (pipeline-level, NOT PaddleOCR params) ----
+    # These are read directly by Pipeline._clean_items; they do NOT go through
+    # to_predict_kwargs(). None → fall back to the Settings (.env) default, so
+    # omitting them is fully backward compatible.
+    min_keep_confidence: Optional[float] = Field(
+        None, ge=0.0, le=1.0,
+        description="全路径最低置信度。低于此值的 text/art_text 项被丢弃。"
+                    "None=用 .env 的 OCR_MIN_KEEP_CONFIDENCE。",
+    )
+    min_text_chars: Optional[int] = Field(
+        None, ge=0, le=50,
+        description="最短有效字符数。去除首尾空白/标点后少于此次数的项视为噪声丢弃。"
+                    "None=用 .env 的 OCR_MIN_TEXT_CHARS。0=禁用。",
+    )
+
     # ---- output granularity ----
     granularity: Optional[Granularity] = Field(
         None, description="word=词框 / line=行框(默认) / paragraph=段落块(合并行)。",
