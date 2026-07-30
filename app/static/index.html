@@ -489,8 +489,8 @@
           <div class="hint">像素概率阈值。调低→召回↑（艺术字救场），噪声↑</div>
         </div>
         <div class="field">
-          <label>text_det_box_thresh <span class="val" id="v_box">0.60</span></label>
-          <input type="range" id="p_box" min="0.1" max="0.9" step="0.05" value="0.6">
+          <label>text_det_box_thresh <span class="val" id="v_box">0.80</span></label>
+          <input type="range" id="p_box" min="0.1" max="0.9" step="0.05" value="0.8">
           <div class="hint">框内平均分。调低→保留淡色字</div>
         </div>
         <div class="field">
@@ -522,6 +522,20 @@
         <div class="field">
           <label><input type="checkbox" id="p_orient" checked> use_textline_orientation</label>
           <div class="hint">文字行方向分类（旋转/倒置字）。关闭→更快</div>
+        </div>
+      </div>
+
+      <div class="param-group">
+        <h4>内容清洗（去背景弱文字）</h4>
+        <div class="field">
+          <label>min_keep_confidence <span class="val" id="v_minconf">0.75</span></label>
+          <input type="range" id="p_minconf" min="0" max="0.95" step="0.05" value="0.75">
+          <div class="hint">全路径最低置信度。低于此值的文字项丢弃。调高→更狠砍弱文字</div>
+        </div>
+        <div class="field">
+          <label>min_text_chars <span class="val" id="v_minchars">3</span></label>
+          <input type="range" id="p_minchars" min="0" max="10" step="1" value="3">
+          <div class="hint">最短有效字符数。去首尾空白/标点后少于此数视为噪声丢弃。0=禁用</div>
         </div>
       </div>
 
@@ -1050,8 +1064,9 @@ $('reset').onclick=fit; $('fit').onclick=fit;
 // =========================================================================
 // params state
 // =========================================================================
-const DEFAULTS = { thresh:0.3, box:0.6, unclip:1.8, sidelen:960, limittype:'max',
-                   rec:0, orient:true, gap:0.6, xov:0.3, gran:'line', engine:'paddleocr' };
+const DEFAULTS = { thresh:0.3, box:0.8, unclip:1.8, sidelen:960, limittype:'max',
+                   rec:0, orient:true, gap:0.6, xov:0.3, gran:'line', engine:'paddleocr',
+                   minconf:0.75, minchars:3 };
 const params = {...DEFAULTS};
 
 function syncParamUI() {
@@ -1064,6 +1079,8 @@ function syncParamUI() {
   $('p_orient').checked = params.orient;
   $('p_gap').value = params.gap; $('v_gap').textContent = params.gap.toFixed(2);
   $('p_xov').value = params.xov; $('v_xov').textContent = params.xov.toFixed(2);
+  $('p_minconf').value = params.minconf; $('v_minconf').textContent = params.minconf.toFixed(2);
+  $('p_minchars').value = params.minchars; $('v_minchars').textContent = String(params.minchars);
   document.querySelectorAll('#granSeg button').forEach(b=>b.classList.toggle('active', b.dataset.v===params.gran));
   document.querySelectorAll('#engineSeg button').forEach(b=>b.classList.toggle('active', b.dataset.v===params.engine));
   syncEngineUI();
@@ -1120,6 +1137,8 @@ bind('p_rec','v_rec','rec', v=> v>0?v.toFixed(2):'默认');
 $('p_orient').addEventListener('change', e=>{params.orient=e.target.checked;markChanged();});
 bind('p_gap','v_gap','gap', v=>v.toFixed(2));
 bind('p_xov','v_xov','xov', v=>v.toFixed(2));
+bind('p_minconf','v_minconf','minconf', v=>v.toFixed(2));
+bind('p_minchars','v_minchars','minchars', v=>String(v));
 document.querySelectorAll('#granSeg button').forEach(b=>b.addEventListener('click',()=>{
   params.gran = b.dataset.v;
   document.querySelectorAll('#granSeg button').forEach(x=>x.classList.toggle('active',x===b));
@@ -1151,6 +1170,9 @@ function buildOptions() {
     if (params.rec > 0) o.text_rec_score_thresh = params.rec;
     if (params.orient !== DEFAULTS.orient) o.use_textline_orientation = params.orient;
   }
+  // 内容清洗参数是 pipeline 级（与引擎无关），vlm 引擎下也生效，故放分支外。
+  if (params.minconf !== DEFAULTS.minconf) o.min_keep_confidence = params.minconf;
+  if (params.minchars !== DEFAULTS.minchars) o.min_text_chars = params.minchars;
   return o;
 }
 
