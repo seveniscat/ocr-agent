@@ -88,6 +88,9 @@ class OCROptions(BaseModel):
                     "默认按最小边,窄长框(单列字/细长行)不会被误杀。None=用 .env 的 "
                     "OCR_MIN_BOX_SIDE。0=禁用。",
     )
+    keep_unrecognized: Optional[bool] = Field(
+        None, description="是否保留 detector 框出但 recognizer 未能识别出文字的原始框(100%全量结果)。"
+    )
 
     # ---- output granularity ----
     granularity: Optional[Granularity] = Field(

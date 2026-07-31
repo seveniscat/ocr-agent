@@ -22,14 +22,37 @@
     display: flex; flex-direction: column; overflow: hidden;
   }
   header {
-    padding: 12px 20px; border-bottom: 1px solid var(--border);
+    padding: 10px 20px; border-bottom: 1px solid var(--border);
     display: flex; align-items: center; gap: 14px; background: var(--panel);
+    flex-wrap: wrap;
   }
   header h1 { font-size: 15px; margin: 0; font-weight: 600; }
   header .sub { color: var(--muted); font-size: 12px; }
   header .spacer { flex: 1; }
   header a { color: var(--accent); font-size: 12px; text-decoration: none; }
   header code { color: var(--muted); font-size: 11px; }
+  header .nav-actions { display: flex; align-items: center; gap: 8px; margin-left: 8px; }
+
+  /* IDE style Run button (#recognizeBtn) */
+  #recognizeBtn.btn-ide-run {
+    background: #10b981; border: 1px solid #059669; color: #ffffff;
+    font-weight: 600; padding: 5px 14px; border-radius: 5px;
+    display: inline-flex; align-items: center; gap: 4px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.3); cursor: pointer;
+    transition: all .15s ease;
+  }
+  #recognizeBtn.btn-ide-run:hover:not(:disabled) {
+    background: #059669; border-color: #047857;
+    box-shadow: 0 0 12px rgba(16, 185, 129, 0.45);
+    transform: translateY(-1px);
+  }
+  #recognizeBtn.btn-ide-run:active:not(:disabled) {
+    transform: translateY(0);
+  }
+  #recognizeBtn.btn-ide-run:disabled {
+    background: var(--panel-2); border-color: var(--border); color: var(--muted);
+    opacity: .5; cursor: not-allowed; box-shadow: none; transform: none;
+  }
 
   .main { flex: 1; display: grid; grid-template-columns: 1fr 420px; min-height: 0; }
 
@@ -415,16 +438,127 @@
   .legend { display: flex; gap: 12px; padding: 6px 14px; font-size: 11px; color: var(--muted); border-bottom: 1px solid var(--border); flex-wrap: wrap; }
   .legend span { display: flex; align-items: center; gap: 4px; }
   .legend i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+
+  /* ---- sidebar 3-tab switcher ---- */
+  .sidebar-tabs {
+    display: flex; flex: 0 0 auto;
+    border-bottom: 2px solid var(--border);
+    background: var(--panel-2);
+  }
+  .sidebar-tab {
+    flex: 1; padding: 10px 4px;
+    font-size: 11px; font-weight: 600;
+    cursor: pointer; color: var(--muted);
+    text-align: center; border-bottom: 2px solid transparent;
+    margin-bottom: -2px; transition: color .15s, border-color .15s;
+    user-select: none; white-space: nowrap;
+  }
+  .sidebar-tab:hover { color: var(--text); }
+  .sidebar-tab.active { color: var(--text); border-bottom-color: var(--accent); }
+  .sidebar-tab .badge { vertical-align: middle; margin-left: 3px; }
+  .sidebar-pane { display: none; overflow-y: auto; flex-shrink: 0; max-height: 54vh; }
+  .sidebar-pane.active { display: block; }
+  /* section title inside a sidebar pane (replaces collapsible <summary>) */
+  .stab-sec-title {
+    padding: 7px 14px 5px;
+    font-size: 10px; font-weight: 600; color: var(--muted);
+    text-transform: uppercase; letter-spacing: .5px;
+    border-top: 1px solid var(--border);
+    display: flex; align-items: center; gap: 6px;
+  }
+  /* VLM inline config pane */
+  .stab-vlm-body { padding: 12px 14px 14px; }
+  .stab-vlm-body .field { margin-bottom: 10px; }
+  .stab-vlm-body .field label { display: block; font-size: 12px; margin-bottom: 3px; }
+  .stab-vlm-body input[type=text],
+  .stab-vlm-body input[type=password],
+  .stab-vlm-body input[type=number],
+  .stab-vlm-body select {
+    width: 100%; background: var(--panel-2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 4px;
+    padding: 5px 7px; font-size: 12px; box-sizing: border-box;
+  }
+  .stab-vlm-body input:focus, .stab-vlm-body select:focus {
+    outline: none; border-color: var(--accent);
+  }
+  .stab-vlm-body input[disabled] { opacity: .5; cursor: not-allowed; }
+  .stab-vlm-body .hint { font-size: 10px; color: var(--muted); margin-top: 3px; }
+  .stab-vlm-body .action-row { display: flex; gap: 8px; }
+
+  /* ---- quick-links: test samples + history ---- */
+  .quick-links { padding: 6px 14px 8px; border-bottom: 1px solid var(--border); }
+  .ql-label {
+    font-size: 10px; color: var(--muted); text-transform: uppercase;
+    letter-spacing: .5px; font-weight: 600; margin-bottom: 5px;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .ql-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+  .ql-chip {
+    font-size: 11px; padding: 2px 9px; border-radius: 10px;
+    background: var(--panel-2); border: 1px solid var(--border);
+    color: var(--accent); cursor: pointer;
+    transition: border-color .12s, background .12s; white-space: nowrap;
+  }
+  .ql-chip:hover { border-color: var(--accent); background: rgba(79,140,255,.12); }
+  .ql-clear {
+    background: none; border: none; color: var(--muted);
+    font-size: 10px; cursor: pointer; padding: 0; margin-left: auto;
+  }
+  .ql-clear:hover { color: var(--err); }
+  .hist-item {
+    padding: 5px 8px; border-radius: 5px; cursor: pointer;
+    background: var(--panel-2); border: 1px solid var(--border);
+    margin-bottom: 4px; transition: border-color .12s;
+  }
+  .hist-item:hover { border-color: var(--accent); }
+  .hist-item.no-url { cursor: default; opacity: .65; }
+  .hist-item.no-url:hover { border-color: var(--border); }
+  .hist-name {
+    font-size: 11px; color: var(--text); white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis; display: block;
+  }
+  .hist-meta { font-size: 10px; color: var(--muted); margin-top: 2px; }
+
+  /* ---- items funnel filter bar ---- */
+  .items-filter-bar {
+    display: flex; gap: 5px; padding: 7px 12px;
+    background: var(--panel-2); border-bottom: 1px solid var(--border);
+    flex-wrap: wrap; flex-shrink: 0;
+  }
+  .if-chip {
+    font-size: 11px; padding: 2px 8px; border-radius: 10px;
+    background: var(--panel-1); border: 1px solid var(--border);
+    color: var(--muted); cursor: pointer; user-select: none;
+    transition: color .12s, border-color .12s, background .12s;
+  }
+  .if-chip:hover { color: var(--text); border-color: var(--accent); }
+  .if-chip.active { color: var(--accent); border-color: var(--accent); background: rgba(79,140,255,.12); font-weight: 600; }
 </style>
 </head>
 <body>
 <header>
-  <h1>ocr-agent</h1>
-  <span class="sub">包装刀模图 OCR · polygon bbox</span>
+  <div style="display:flex; align-items:center; gap:8px;">
+    <h1>ocr-agent</h1>
+    <span class="sub">包装刀模图 OCR</span>
+  </div>
+
   <span class="spacer"></span>
   <code id="meta"></code>
-  <a href="/logs" target="_blank">日志 ↗</a>
-  <a href="/docs" target="_blank">API docs ↗</a>
+  <a href="/logs" target="_blank" style="margin-right:4px;">日志 ↗</a>
+  <a href="/docs" target="_blank" style="margin-right:8px;">API docs ↗</a>
+
+  <!-- 右上角 IDE 风格运行操作栏 -->
+  <div class="nav-actions">
+    <div class="seg" id="engineSeg" title="OCR 引擎：PaddleOCR（本地，快）或 VLM（Qwen-VL，艺术字/二维码更强）">
+      <button data-v="paddleocr" class="active">PaddleOCR</button>
+      <button data-v="vlm">VLM</button>
+    </div>
+    <button class="btn btn-ide-run" id="recognizeBtn" disabled>▶ 运行识别</button>
+    <button class="btn feature-hidden" id="splitPanelsBtn" disabled>⊞ 拆面</button>
+    <button class="btn feature-hidden" id="understandBtn" disabled>✦ AI 理解</button>
+    <button class="btn feature-hidden" id="verifyBtn" disabled>✓ 文案校验</button>
+    <button class="btn ghost" id="clearBtn" disabled>清除</button>
+  </div>
 </header>
 
 <div class="main">
@@ -449,346 +583,216 @@
 
   <!-- RIGHT: panel -->
   <div class="panel">
-    <div class="upload">
-      <div class="dropzone" id="dropzone">
-        <strong>拖拽图片到这里，或点击选择</strong>
-        <span>PNG / JPG / WEBP · 高分辨率自动异步处理</span>
-        <div class="filename" id="filename"></div>
-        <input type="file" id="fileInput" accept="image/*" hidden>
-      </div>
-      <div class="url-row">
-        <input type="text" id="urlInput" placeholder="或粘贴图片链接（http/https）· 大图推荐用链接" autocomplete="off">
-        <button class="btn" id="loadUrlBtn" type="button">加载</button>
-      </div>
-      <div class="action-row">
-        <div class="seg" id="engineSeg" title="OCR 引擎：PaddleOCR（本地，快）或 VLM（Qwen-VL，艺术字/二维码更强）">
-          <button data-v="paddleocr" class="active">PaddleOCR</button>
-          <button data-v="vlm">VLM</button>
-        </div>
-        <button class="btn primary" id="recognizeBtn" disabled>▶ 识别</button>
-        <button class="btn feature-hidden" id="splitPanelsBtn" disabled>⊞ 拆面</button>
-        <button class="btn feature-hidden" id="understandBtn" disabled>✦ AI 理解</button>
-        <button class="btn feature-hidden" id="verifyBtn" disabled>✓ 文案校验</button>
-        <button class="btn ghost" id="clearBtn" disabled>清除</button>
-      </div>
-      <div class="status" id="status"></div>
-      <!-- Interactive splitting toolbar (shown only in split mode) -->
-      <div class="split-toolbar" id="splitToolbar" style="display:none">
-        <div class="split-info" id="splitInfo">已选 0 横 + 0 纵 → 1 个面板</div>
-        <div class="action-row">
-          <button class="btn primary" id="confirmSplitBtn">✓ 确认拆面</button>
-          <button class="btn ghost" id="cancelSplitBtn">取消</button>
-        </div>
-        <div class="split-hint">按住线条拖拽(横线上下/竖线左右)对齐切割位置 · 绿=高 黄=中 灰=低 · 确认拆面</div>
-      </div>
+
+    <!-- Sidebar 3 big tabs -->
+    <div class="sidebar-tabs">
+      <div class="sidebar-tab active" data-stab="image">🖼 图片&amp;预处理</div>
+      <div class="sidebar-tab" data-stab="vlm">✦ VLM<span class="badge" id="vlmBadge" style="margin-left:4px">未配置</span></div>
+      <div class="sidebar-tab" data-stab="paddle">⚙ Paddle<span class="badge" id="paramBadge" style="margin-left:4px">已改</span></div>
     </div>
 
-    <!-- VLM provider config entry → opens a modal (persisted to .env; powers AI 理解 + art-text fallback) -->
-    <details class="params" id="vlmConfig">
-      <summary id="vlmConfigEntry">
-        <span class="chev">▸</span> VLM 配置（AI 理解 / 艺术字兜底）
-        <span class="badge" id="vlmBadge">未配置</span>
-      </summary>
-    </details>
-
-    <!-- 图片预处理：上传/加载图片后勾选增强项，应用预览→替换查看器图，之后「识别」作用于处理后的图。-->
-    <details class="params" id="preprocess">
-      <summary>
-        <span class="chev">▸</span> 图片预处理（对比度 / 锐化 / 去噪…）
-        <span class="badge" id="preBadge">已应用</span>
-      </summary>
-
-      <div class="param-group">
-        <h4>对比度增强</h4>
-        <div class="field">
-          <label><input type="checkbox" id="pe_clahe" checked> CLAHE（局部自适应直方图均衡化，最有效）</label>
-          <div class="hint">局部增强对比度，正常文字变清晰，背景噪声不会被过度放大。建议默认开启</div>
+    <!-- ===== Pane 1: 图片 & 预处理 ===== -->
+    <div class="sidebar-pane active" id="stab-image">
+      <div class="upload">
+        <div class="dropzone" id="dropzone">
+          <strong>拖拽图片到这里，或点击选择</strong>
+          <span>PNG / JPG / WEBP · 高分辨率自动异步处理</span>
+          <div class="filename" id="filename"></div>
+          <input type="file" id="fileInput" accept="image/*" hidden>
         </div>
-        <div class="field">
-          <label>clahe clip_limit <span class="val" id="v_pe_claheclip">2.0</span></label>
-          <input type="range" id="pe_clahe_clip" min="0.5" max="4" step="0.1" value="2.0">
-          <div class="hint">对比度增益上限。调高→更激进；过高会放大噪声</div>
+        <div class="url-row">
+          <input type="text" id="urlInput" placeholder="或粘贴图片链接（http/https）· 大图推荐用链接" autocomplete="off">
+          <button class="btn" id="loadUrlBtn" type="button">加载</button>
         </div>
-        <div class="field">
-          <label>clahe tile_size <span class="val" id="v_pe_clahetile">8</span></label>
-          <input type="range" id="pe_clahe_tile" min="4" max="16" step="1" value="8">
-          <div class="hint">分块网格大小（px）。调大→更全局的均衡</div>
-        </div>
-      </div>
-
-      <div class="param-group">
-        <h4>边缘与降噪</h4>
-        <div class="field">
-          <label><input type="checkbox" id="pe_sharpen" checked> 轻度锐化</label>
-          <div class="hint">unsharp mask 强化文字边缘，提升检测置信度</div>
-        </div>
-        <div class="field">
-          <label>sharpen amount <span class="val" id="v_pe_amount">0.6</span></label>
-          <input type="range" id="pe_sharpen_amount" min="0.2" max="1.5" step="0.1" value="0.6">
-          <div class="hint">锐化强度。过高→细笔画出现振铃，建议 ≤1</div>
-        </div>
-        <div class="field">
-          <label><input type="checkbox" id="pe_denoise"> 轻度去噪（可选）</label>
-          <div class="hint">非局部均值滤波清理背景，保边缘不糊文字。背景干净时可不开</div>
-        </div>
-        <div class="field">
-          <label>denoise strength <span class="val" id="v_pe_strength">7</span></label>
-          <input type="range" id="pe_denoise_strength" min="3" max="15" step="1" value="7">
-          <div class="hint">去噪强度（h）。调高→更干净，但可能弱化淡色字</div>
-        </div>
-      </div>
-
-      <div class="param-group">
-        <h4>灰度与二值化（扫描件 / 低对比）</h4>
-        <div class="field">
-          <label><input type="checkbox" id="pe_grayscale"> 灰度化（可选）</label>
-          <div class="hint">转灰度再做后续增强，部分彩色噪声图对比度提升更明显</div>
-        </div>
-        <div class="field">
-          <label><input type="checkbox" id="pe_threshold"> 二值化（可选）</label>
-          <div class="hint">对扫描件/低对比文字效果显著，彩色包装图可能丢信息，慎用</div>
-        </div>
-        <div class="field">
-          <label>threshold mode</label>
-          <select id="pe_threshold_mode">
-            <option value="otsu">otsu（全局，光照均匀）</option>
-            <option value="adaptive">adaptive（自适应，光照不均）</option>
-          </select>
-          <div class="hint">otsu 自动算全局阈值；adaptive 用局部窗口，适合阴影/不均光</div>
-        </div>
-      </div>
-
-      <div class="param-group">
-        <h4>形态学</h4>
-        <div class="field">
-          <label><input type="checkbox" id="pe_morph"> 形态学闭运算（可选）</label>
-          <div class="hint">膨胀+腐蚀连通断裂笔画，有助于检测器连字成行</div>
-        </div>
-        <div class="field">
-          <label>morph kernel <span class="val" id="v_pe_ks">2</span></label>
-          <input type="range" id="pe_morph_ksize" min="2" max="5" step="1" value="2">
-          <div class="hint">核大小。调大→更激进连通，但可能把相邻字糊在一起</div>
-        </div>
-      </div>
-
-      <div class="param-group">
-        <div class="action-row">
-          <button class="btn primary" id="applyPreprocessBtn" disabled>▶ 应用预览</button>
-          <button class="btn ghost" id="revertPreprocessBtn" disabled>↩ 恢复原图</button>
-        </div>
-        <div style="margin-top:8px">
-          <button class="btn ghost" id="resetPreprocess" style="width:100%">↺ 恢复默认勾选</button>
-        </div>
-        <div class="hint" style="margin-top:6px">处理顺序：灰度→CLAHE→去噪→锐化→二值化→闭运算。应用后查看器显示处理图，「识别」作用于该图</div>
-      </div>
-    </details>
-
-    <!-- Tunable params -->
-    <details class="params" id="params">
-      <summary>
-        <span class="chev">▸</span> PaddleOCR 参数
-        <span class="badge" id="paramBadge">已改</span>
-      </summary>
-
-      <div class="param-group">
-        <h4>输出粒度</h4>
-        <div class="field">
-          <div class="seg" id="granSeg">
-            <button data-v="word">词 word</button>
-            <button data-v="line" class="active">行 line</button>
-            <button data-v="paragraph">段落 paragraph</button>
+        <!-- 测试用例快速加载 -->
+        <div class="quick-links">
+          <div class="ql-label">测试用例</div>
+          <div class="ql-chips">
+            <span class="ql-chip" data-url="https://file-oss.putaocdn.com/file/56dfdc2a16ff99d1503d890dd1d3b9ee9fda27f3.jpg">样本 1</span>
+            <span class="ql-chip" data-url="https://file-oss.putaocdn.com/file/ff43401feac5f420e00f437f97132528483ef8e1.jpg">样本 2</span>
+            <span class="ql-chip" data-url="https://file-oss.putaocdn.com/file/9f6c03cf2dbd52d202e75d6be5762725ee1c8dc6.jpg">样本 3</span>
+            <span class="ql-chip" data-url="https://file-oss.putaocdn.com/file/3edbcafcb8b1119a646dfefe30c53ff0e9c5928c.jpg">样本 4</span>
+            <span class="ql-chip" data-url="https://file-oss.putaocdn.com/file/38f33ce93a46b27844fda5ccc984436a35533a04.jpg">样本 5</span>
           </div>
-          <div class="hint">paragraph = 把相邻行合并成段落块</div>
         </div>
-      </div>
-
-      <div class="param-group">
-        <h4>检测器 DB++</h4>
-        <div class="field">
-          <label>text_det_thresh <span class="val" id="v_thresh">0.30</span></label>
-          <input type="range" id="p_thresh" min="0.1" max="0.6" step="0.01" value="0.3">
-          <div class="hint">像素概率阈值。调低→召回↑（艺术字救场），噪声↑</div>
+        <!-- 历史检测记录 -->
+        <div class="quick-links" id="historySection" style="display:none">
+          <div class="ql-label">历史记录 <button class="ql-clear" id="clearHistoryBtn">清空</button></div>
+          <div id="historyList"></div>
         </div>
-        <div class="field">
-          <label>text_det_box_thresh <span class="val" id="v_box">0.80</span></label>
-          <input type="range" id="p_box" min="0.1" max="0.9" step="0.05" value="0.8">
-          <div class="hint">框内平均分。调低→保留淡色字</div>
-        </div>
-        <div class="field">
-          <label>text_det_unclip_ratio <span class="val" id="v_unclip">1.8</span></label>
-          <input type="range" id="p_unclip" min="0.5" max="4" step="0.1" value="1.8">
-          <div class="hint">框放大系数。调大→艺术字溢出笔画被框住</div>
-        </div>
-        <div class="field">
-          <label>text_det_limit_side_len <span class="val" id="v_sidelen">960</span></label>
-          <input type="range" id="p_sidelen" min="320" max="2560" step="32" value="960">
-          <div class="hint">检测前长边缩放。调大→小字更清，更耗内存</div>
-        </div>
-        <div class="field">
-          <label>text_det_limit_type</label>
-          <select id="p_limittype">
-            <option value="max">max (只缩小保细节)</option>
-            <option value="min">min (只放大提速)</option>
-          </select>
-        </div>
-      </div>
-
-      <div class="param-group">
-        <h4>识别器</h4>
-        <div class="field">
-          <label>text_rec_score_thresh <span class="val" id="v_rec">—</span></label>
-          <input type="range" id="p_rec" min="0" max="0.9" step="0.05" value="0">
-          <div class="hint">识别置信度门槛。低于此值的框被丢弃（0=用模型默认）</div>
-        </div>
-        <div class="field">
-          <label><input type="checkbox" id="p_orient" checked> use_textline_orientation</label>
-          <div class="hint">文字行方向分类（旋转/倒置字）。关闭→更快</div>
-        </div>
-      </div>
-
-      <div class="param-group">
-        <h4>内容清洗（去背景弱文字）</h4>
-        <div class="field">
-          <label>min_keep_confidence <span class="val" id="v_minconf">0.75</span></label>
-          <input type="range" id="p_minconf" min="0" max="0.95" step="0.05" value="0.75">
-          <div class="hint">全路径最低置信度。低于此值的文字项丢弃。调高→更狠砍弱文字</div>
-        </div>
-        <div class="field">
-          <label>min_text_chars <span class="val" id="v_minchars">3</span></label>
-          <input type="range" id="p_minchars" min="0" max="10" step="1" value="3">
-          <div class="hint">最短有效字符数。去首尾空白/标点后少于此数视为噪声丢弃。0=禁用</div>
-        </div>
-      </div>
-
-      <div class="param-group" id="paraGroup">
-        <h4>段落合并（仅 paragraph）</h4>
-        <div class="field">
-          <label>gap_ratio <span class="val" id="v_gap">0.60</span></label>
-          <input type="range" id="p_gap" min="0.1" max="2" step="0.05" value="0.6">
-          <div class="hint">行间距 ≤ 此值×行高 才合并。调大→更激进合并</div>
-        </div>
-        <div class="field">
-          <label>x_overlap <span class="val" id="v_xov">0.30</span></label>
-          <input type="range" id="p_xov" min="0" max="1" step="0.05" value="0.3">
-          <div class="hint">行水平重叠比例下限</div>
-        </div>
-      </div>
-
-      <div class="param-group">
-        <button class="btn ghost" id="resetParams" style="width:100%">↺ 恢复默认参数</button>
-      </div>
-    </details>
-
-    <div class="legend">
-      <span><i style="background:var(--text-color)"></i>文字</span>
-      <span><i style="background:var(--art)"></i>艺术字</span>
-      <span><i style="background:var(--qr)"></i>二维码</span>
-      <span><i style="background:var(--barcode)"></i>条码</span>
-      <span><i style="background:#6366f1"></i>理解元素（按类型着色）</span>
-    </div>
-
-    <div class="tabs">
-      <div class="tab active" data-tab="items">识别结果 <span id="count"></span></div>
-      <div class="tab feature-hidden" data-tab="understand">理解</div>
-      <div class="tab feature-hidden" data-tab="verify">校验</div>
-      <div class="tab" data-tab="debug">调试</div>
-      <div class="tab" data-tab="json">JSON</div>
-    </div>
-
-    <div class="tabbody">
-      <div class="pane active" id="pane-items">
-        <div style="color:var(--muted);font-size:12px;padding:14px" id="itemsPlaceholder">上传图片后点击「识别」</div>
-      </div>
-      <div class="pane" id="pane-understand">
-        <div style="color:var(--muted);font-size:12px;padding:14px" id="understandPlaceholder">上传图片后点击「✦ AI 理解」，让 VLM 看懂这张图</div>
-      </div>
-      <div class="pane" id="pane-verify">
-        <div class="verify-input">
-          <div class="verify-hint">
-            维护标准文案（要核对的文字）。每行一条；行内可加 <code>=选填</code> 标记该条为可选，或 <code>#分组</code> 归类。例：<code>净含量450g #净含量</code>。
-            也可直接粘贴 JSON 数组：<code>[{"text":"…","required":false,"category":"…"}]</code>。
-          </div>
-          <textarea id="verifyStandard" rows="6" placeholder="品名：鲜奶茶&#10;净含量：450g #净含量&#10;生产日期：见包装=选填"></textarea>
+        <div class="status" id="status"></div>
+        <!-- Interactive splitting toolbar (shown only in split mode) -->
+        <div class="split-toolbar" id="splitToolbar" style="display:none">
+          <div class="split-info" id="splitInfo">已选 0 横 + 0 纵 → 1 个面板</div>
           <div class="action-row">
-            <button class="btn primary" id="runVerifyBtn" disabled>✓ 开始校验</button>
+            <button class="btn primary" id="confirmSplitBtn">✓ 确认拆面</button>
+            <button class="btn ghost" id="cancelSplitBtn">取消</button>
+          </div>
+          <div class="split-hint">按住线条拖拽(横线上下/竖线左右)对齐切割位置 · 绿=高 黄=中 灰=低 · 确认拆面</div>
+        </div>
+      </div>
+
+      <!-- 图片预处理（对比度 / 锐化 / 去噪…） -->
+      <div id="preprocess">
+        <div class="stab-sec-title" style="display:flex; align-items:center; justify-content:space-between;">
+          <span>图片预处理（对比度·锐化·去噪…）</span>
+          <div style="display:flex; align-items:center; gap:6px; margin-left:auto;">
+            <label class="toggle" title="开启/关闭预处理" style="transform:scale(0.85);">
+              <input type="checkbox" id="pe_master_enable">
+              <span class="track"></span>
+            </label>
+            <span class="badge" id="preBadge">已应用</span>
           </div>
         </div>
-        <div id="verifyResults"></div>
-      </div>
-      <div class="pane" id="pane-debug">
-        <div style="color:var(--muted);font-size:12px;padding:14px" id="debugPlaceholder">上传图片后点击「识别」,此处展示漏斗各阶段计数与 VLM 兜底前后变化</div>
-      </div>
-      <div class="pane" id="pane-json"><pre class="json" id="jsonOut"></pre></div>
-    </div>
-  </div>
-</div>
 
-<!-- VLM config modal (must be in DOM before the script binds listeners) -->
-<div class="modal-backdrop" id="vlmModal" onclick="if(event.target===this)closeVlmModal()">
-  <div class="modal">
-    <div class="modal-head">
-      <h3>VLM 配置</h3>
-      <button class="close" onclick="closeVlmModal()" aria-label="关闭">×</button>
-    </div>
-    <div class="modal-body">
-      <!-- Master switch: controls vlm_enabled (art-text fallback + understand/agent) -->
-      <div class="master-switch">
-        <div>
-          <div class="ms-label">● VLM 总开关</div>
-          <div class="ms-hint">关闭后 /understand、/agent/understand、/panels/vlm 返回 503；/analyze 默认仅用 PaddleOCR</div>
+        <div id="preprocess_controls" style="opacity:0.4; pointer-events:none;">
+          <div class="param-group">
+            <h4>对比度增强</h4>
+            <div class="field">
+              <label><input type="checkbox" id="pe_clahe" checked> CLAHE（局部自适应直方图均衡化，最有效）</label>
+              <div class="hint">局部增强对比度，正常文字变清晰，背景噪声不会被过度放大。建议默认开启</div>
+            </div>
+            <div class="field">
+              <label>clahe clip_limit <span class="val" id="v_pe_claheclip">2.0</span></label>
+              <input type="range" id="pe_clahe_clip" min="0.5" max="4" step="0.1" value="2.0">
+              <div class="hint">对比度增益上限。调高→更激进；过高会放大噪声</div>
+            </div>
+            <div class="field">
+              <label>clahe tile_size <span class="val" id="v_pe_clahetile">8</span></label>
+              <input type="range" id="pe_clahe_tile" min="4" max="16" step="1" value="8">
+              <div class="hint">分块网格大小（px）。调大→更全局的均衡</div>
+            </div>
+          </div>
+
+          <div class="param-group">
+            <h4>边缘与降噪</h4>
+            <div class="field">
+              <label><input type="checkbox" id="pe_sharpen" checked> 轻度锐化</label>
+              <div class="hint">unsharp mask 强化文字边缘，提升检测置信度</div>
+            </div>
+            <div class="field">
+              <label>sharpen amount <span class="val" id="v_pe_amount">0.6</span></label>
+              <input type="range" id="pe_sharpen_amount" min="0.2" max="1.5" step="0.1" value="0.6">
+              <div class="hint">锐化强度。过高→细笔画出现振铃，建议 ≤1</div>
+            </div>
+            <div class="field">
+              <label><input type="checkbox" id="pe_denoise"> 轻度去噪（可选）</label>
+              <div class="hint">非局部均值滤波清理背景，保边缘不糊文字。背景干净时可不开</div>
+            </div>
+            <div class="field">
+              <label>denoise strength <span class="val" id="v_pe_strength">7</span></label>
+              <input type="range" id="pe_denoise_strength" min="3" max="15" step="1" value="7">
+              <div class="hint">去噪强度（h）。调高→更干净，但可能弱化淡色字</div>
+            </div>
+          </div>
+
+          <div class="param-group">
+            <h4>灰度与二值化（扫描件 / 低对比）</h4>
+            <div class="field">
+              <label><input type="checkbox" id="pe_grayscale"> 灰度化（可选）</label>
+              <div class="hint">转灰度再做后续增强，部分彩色噪声图对比度提升更明显</div>
+            </div>
+            <div class="field">
+              <label><input type="checkbox" id="pe_threshold"> 二值化（可选）</label>
+              <div class="hint">对扫描件/低对比文字效果显著，彩色包装图可能丢信息，慎用</div>
+            </div>
+            <div class="field">
+              <label>threshold mode</label>
+              <select id="pe_threshold_mode">
+                <option value="otsu">otsu（全局，光照均匀）</option>
+                <option value="adaptive">adaptive（自适应，光照不均）</option>
+              </select>
+              <div class="hint">otsu 自动算全局阈值；adaptive 用局部窗口，适合阴影/不均光</div>
+            </div>
+          </div>
+
+          <div class="param-group">
+            <h4>形态学</h4>
+            <div class="field">
+              <label><input type="checkbox" id="pe_morph"> 形态学闭运算（可选）</label>
+              <div class="hint">膨胀+腐蚀连通断裂笔画，有助于检测器连字成行</div>
+            </div>
+            <div class="field">
+              <label>morph kernel <span class="val" id="v_pe_ks">2</span></label>
+              <input type="range" id="pe_morph_ksize" min="2" max="5" step="1" value="2">
+              <div class="hint">核大小。调大→更激进连通，但可能把相邻字糊在一起</div>
+            </div>
+          </div>
+
+          <div class="param-group">
+            <div class="action-row">
+              <button class="btn primary" id="applyPreprocessBtn" disabled>▶ 应用预览</button>
+              <button class="btn ghost" id="revertPreprocessBtn" disabled>↩ 恢复原图</button>
+            </div>
+            <div style="margin-top:8px">
+              <button class="btn ghost" id="resetPreprocess" style="width:100%">↺ 恢复默认勾选</button>
+            </div>
+            <div class="hint" style="margin-top:6px">处理顺序：灰度→CLAHE→去噪→锐化→二值化→闭运算。应用后查看器显示处理图，「识别」作用于该图</div>
+          </div>
+        </div><!-- /preprocess_controls -->
+      </div><!-- /preprocess -->
+    </div><!-- /stab-image -->
+
+    <!-- ===== Pane 2: VLM config (inline, replaces modal) ===== -->
+    <div class="sidebar-pane" id="stab-vlm">
+      <div class="stab-vlm-body">
+        <!-- Master switch: controls vlm_enabled (art-text fallback + understand/agent) -->
+        <div class="master-switch">
+          <div>
+            <div class="ms-label">● VLM 总开关</div>
+            <div class="ms-hint">关闭后 /understand、/agent/understand、/panels/vlm 返回 503；/analyze 默认仅用 PaddleOCR</div>
+          </div>
+          <label class="toggle">
+            <input type="checkbox" id="cfg_vlm_enabled">
+            <span class="track"></span>
+          </label>
         </div>
-        <label class="toggle">
-          <input type="checkbox" id="cfg_vlm_enabled">
-          <span class="track"></span>
-        </label>
-      </div>
 
-      <div class="master-switch" style="margin-top:8px">
-        <div>
-          <div class="ms-label">OCR 低置信 VLM 重认</div>
-          <div class="ms-hint">仅影响 POST /analyze：对低置信 crop 调用 VLM（需总开关 + API key）</div>
+        <div class="master-switch" style="margin-top:8px">
+          <div>
+            <div class="ms-label">OCR 低置信 VLM 重认</div>
+            <div class="ms-hint">仅影响 POST /analyze：对低置信 crop 调用 VLM（需总开关 + API key）</div>
+          </div>
+          <label class="toggle">
+            <input type="checkbox" id="cfg_vlm_ocr_fallback">
+            <span class="track"></span>
+          </label>
         </div>
-        <label class="toggle">
-          <input type="checkbox" id="cfg_vlm_ocr_fallback">
-          <span class="track"></span>
-        </label>
-      </div>
-      <div class="field" style="padding:2px 0 0; margin-left:2px">
-        <label>重认阈值（低于此置信度的文字框送 VLM，0–1）</label>
-        <input type="number" id="cfg_rec_confidence_fallback" min="0" max="1" step="0.01" placeholder="0.94">
-        <div class="hint">默认 0.94；调低→只重认更差的框（省 VLM 调用）；调高→更多框被重认。应 ≥ 丢弃阈值</div>
-      </div>
-      <div class="field" style="padding:2px 0 0; margin-left:2px">
-        <label>丢弃阈值（仅 /analyze：最终置信度低于此值的文字框直接丢弃，0–1）</label>
-        <input type="number" id="cfg_rec_confidence_drop" min="0" max="1" step="0.01" placeholder="0.60">
-        <div class="hint">默认 0.60；与重认阈值配合：[丢弃, 重认) 区间走 VLM 重认，&lt;丢弃 则从结果移除（仅文本框，二维码/条码不受影响）</div>
-      </div>
-      <div class="field" style="padding:2px 0 0; margin-left:2px">
-        <label>VLM 未提升丢弃阈值（送过 VLM 但置信度没提高、且低于此值的文字框也丢弃，0–1）</label>
-        <input type="number" id="cfg_rec_confidence_vlm_drop" min="0" max="1" step="0.01" placeholder="0.85">
-        <div class="hint">默认 0.85；独立于上面那条规则：VLM 看过却没能提升、置信度落在 [0.60, 0.85) 的文字框也会被丢弃。被 VLM 提升过、或没经过 VLM 的框不受此规则影响（仅 /analyze，仅文本框）</div>
-      </div>
-
-      <div class="master-switch" style="margin-top:8px">
-        <div>
-          <div class="ms-label">VLM OCR 引擎</div>
-          <div class="ms-hint">开启后可选用 VLM 引擎识别（识别按钮旁切换）。Qwen-VL 框选所有文字/艺术字/二维码/条码，需总开关 + API key</div>
+        <div class="field" style="margin-top:8px">
+          <label>重认阈值（低于此置信度的文字框送 VLM，0–1）</label>
+          <input type="number" id="cfg_rec_confidence_fallback" min="0" max="1" step="0.01" placeholder="0.94">
+          <div class="hint">默认 0.94；调低→只重认更差的框（省 VLM 调用）；调高→更多框被重认。应 ≥ 丢弃阈值</div>
         </div>
-        <label class="toggle">
-          <input type="checkbox" id="cfg_vlm_ocr_enabled">
-          <span class="track"></span>
-        </label>
-      </div>
-      <div class="field" id="cfg_vlm_ocr_model_group" style="padding:0 0 4px">
-        <label>VLM OCR 模型（留空=复用上方 model）</label>
-        <input type="text" id="cfg_vlm_ocr_model" placeholder="留空则复用默认 model（建议 grounding 强的模型）">
-        <div class="hint">如 qwen2.5-vl-72b-instruct 等定位能力强的模型；空值复用 model</div>
-      </div>
+        <div class="field">
+          <label>丢弃阈值（仅 /analyze：最终置信度低于此值的文字框直接丢弃，0–1）</label>
+          <input type="number" id="cfg_rec_confidence_drop" min="0" max="1" step="0.01" placeholder="0.60">
+          <div class="hint">默认 0.60；与重认阈值配合：[丢弃, 重认) 区间走 VLM 重认，&lt;丢弃 则从结果移除（仅文本框，二维码/条码不受影响）</div>
+        </div>
+        <div class="field">
+          <label>VLM 未提升丢弃阈值（送过 VLM 但置信度没提高、且低于此值的文字框也丢弃，0–1）</label>
+          <input type="number" id="cfg_rec_confidence_vlm_drop" min="0" max="1" step="0.01" placeholder="0.85">
+          <div class="hint">默认 0.85；独立于上面那条规则：VLM 看过却没能提升、置信度落在 [0.60, 0.85) 的文字框也会被丢弃。被 VLM 提升过、或没经过 VLM 的框不受此规则影响（仅 /analyze，仅文本框）</div>
+        </div>
 
-      <div class="param-group" style="padding:0">
+        <div class="master-switch" style="margin-top:4px">
+          <div>
+            <div class="ms-label">VLM OCR 引擎</div>
+            <div class="ms-hint">开启后可选用 VLM 引擎识别（识别按钮旁切换）。Qwen-VL 框选所有文字/艺术字/二维码/条码，需总开关 + API key</div>
+          </div>
+          <label class="toggle">
+            <input type="checkbox" id="cfg_vlm_ocr_enabled">
+            <span class="track"></span>
+          </label>
+        </div>
+        <div class="field" id="cfg_vlm_ocr_model_group" style="margin-top:8px">
+          <label>VLM OCR 模型（留空=复用上方 model）</label>
+          <input type="text" id="cfg_vlm_ocr_model" placeholder="留空则复用默认 model（建议 grounding 强的模型）">
+          <div class="hint">如 qwen2.5-vl-72b-instruct 等定位能力强的模型；空值复用 model</div>
+        </div>
+
         <div class="field">
           <label>Provider</label>
-          <input type="text" value="qwen" disabled style="opacity:.6">
+          <input type="text" value="qwen" disabled>
           <div class="hint">OpenAI 兼容协议接入 DashScope / 自建端点（当前仅支持 qwen）</div>
         </div>
         <div class="field">
@@ -824,16 +828,167 @@
         </div>
         <div class="field">
           <label><input type="checkbox" id="cfg_understand"> 启用 AI 理解层（POST /understand）</label>
-          <label><input type="checkbox" id="cfg_thinking"> 思考模式（Qwen3.x 深度推理；与 JSON 严格输出互斥，靠容错解析）</label>
+          <label style="margin-top:4px"><input type="checkbox" id="cfg_thinking"> 思考模式（Qwen3.x 深度推理；与 JSON 严格输出互斥，靠容错解析）</label>
         </div>
-        <div class="action-row" style="margin-top:6px">
+        <div class="action-row" style="margin-top:8px">
           <button class="btn primary" id="saveVlmBtn">💾 保存配置</button>
           <span class="val" id="cfg_status"></span>
         </div>
       </div>
+    </div><!-- /stab-vlm -->
+
+    <!-- ===== Pane 3: PaddleOCR params ===== -->
+    <div class="sidebar-pane" id="stab-paddle">
+      <!-- Tunable params -->
+      <div id="params">
+
+        <div class="param-group">
+          <h4>输出粒度</h4>
+          <div class="field">
+            <div class="seg" id="granSeg">
+              <button data-v="word">词 word</button>
+              <button data-v="line" class="active">行 line</button>
+              <button data-v="paragraph">段落 paragraph</button>
+            </div>
+            <div class="hint">paragraph = 把相邻行合并成段落块</div>
+          </div>
+        </div>
+
+        <div class="param-group">
+          <h4>检测器 DB++</h4>
+          <div class="field">
+            <label>text_det_thresh <span class="val" id="v_thresh">0.35</span></label>
+            <input type="range" id="p_thresh" min="0.1" max="0.6" step="0.01" value="0.35">
+            <div class="hint">像素概率阈值。调低→召回↑（艺术字救场），噪声↑</div>
+          </div>
+          <div class="field">
+            <label>text_det_box_thresh <span class="val" id="v_box">0.65</span></label>
+            <input type="range" id="p_box" min="0.1" max="0.9" step="0.05" value="0.65">
+            <div class="hint">框内平均分。调低→保留淡色字</div>
+          </div>
+          <div class="field">
+            <label>text_det_unclip_ratio <span class="val" id="v_unclip">1.6</span></label>
+            <input type="range" id="p_unclip" min="0.5" max="4" step="0.1" value="1.6">
+            <div class="hint">框放大系数。调大→艺术字溢出笔画被框住</div>
+          </div>
+          <div class="field">
+            <label>text_det_limit_side_len <span class="val" id="v_sidelen">960</span></label>
+            <input type="range" id="p_sidelen" min="320" max="2560" step="32" value="960">
+            <div class="hint">检测前长边缩放。调大→小字更清，更耗内存</div>
+          </div>
+          <div class="field">
+            <label>text_det_limit_type</label>
+            <select id="p_limittype">
+              <option value="max">max (只缩小保细节)</option>
+              <option value="min">min (只放大提速)</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="param-group">
+          <h4>识别器</h4>
+          <div class="field">
+            <label>text_rec_score_thresh <span class="val" id="v_rec">—</span></label>
+            <input type="range" id="p_rec" min="0" max="0.9" step="0.05" value="0">
+            <div class="hint">识别置信度门槛。低于此值的框被丢弃（0=用模型默认）</div>
+          </div>
+          <div class="field">
+            <label><input type="checkbox" id="p_orient" checked> use_textline_orientation</label>
+            <div class="hint">文字行方向分类（旋转/倒置字）。关闭→更快</div>
+          </div>
+        </div>
+
+        <div class="param-group">
+          <h4>内容清洗（全量显示 / 噪声过滤）</h4>
+          <div class="field">
+            <label><input type="checkbox" id="p_keep_unrecognized" checked> 保留未识别检测框 (100% 显示 PaddleOCR 原始框)</label>
+            <div class="hint">开启后即使 Recognizer 未能识别出文案的 DB++ 原始框也全量展示</div>
+          </div>
+          <div class="field">
+            <label>min_keep_confidence <span class="val" id="v_minconf">0.00</span></label>
+            <input type="range" id="p_minconf" min="0" max="0.95" step="0.05" value="0">
+            <div class="hint">全路径最低置信度。默认 0.00 (显示所有 OCR 结果)；调高可过滤背景弱文字</div>
+          </div>
+          <div class="field">
+            <label>min_text_chars <span class="val" id="v_minchars">0</span></label>
+            <input type="range" id="p_minchars" min="0" max="10" step="1" value="0">
+            <div class="hint">最短有效字符数。默认 0 (保留单字/短字)；调高可过滤微小碎片噪声</div>
+          </div>
+        </div>
+
+        <div class="param-group" id="paraGroup">
+          <h4>段落合并（仅 paragraph）</h4>
+          <div class="field">
+            <label>gap_ratio <span class="val" id="v_gap">0.60</span></label>
+            <input type="range" id="p_gap" min="0.1" max="2" step="0.05" value="0.6">
+            <div class="hint">行间距 ≤ 此值×行高 才合并。调大→更激进合并</div>
+          </div>
+          <div class="field">
+            <label>x_overlap <span class="val" id="v_xov">0.30</span></label>
+            <input type="range" id="p_xov" min="0" max="1" step="0.05" value="0.3">
+            <div class="hint">行水平重叠比例下限</div>
+          </div>
+        </div>
+
+        <div class="param-group">
+          <button class="btn ghost" id="resetParams" style="width:100%">↺ 恢复默认参数</button>
+        </div>
+      </div><!-- /params -->
+    </div><!-- /stab-paddle -->
+
+    <div class="legend">
+      <span><i style="background:var(--text-color)"></i>文字</span>
+      <span><i style="background:var(--art)"></i>艺术字</span>
+      <span><i style="background:var(--qr)"></i>二维码</span>
+      <span><i style="background:var(--barcode)"></i>条码</span>
+      <span><i style="background:#6366f1"></i>理解元素（按类型着色）</span>
+    </div>
+
+    <div class="tabs">
+      <div class="tab active" data-tab="items">识别结果 <span id="count"></span></div>
+      <div class="tab feature-hidden" data-tab="understand">理解</div>
+      <div class="tab feature-hidden" data-tab="verify">校验</div>
+      <div class="tab" data-tab="debug">调试</div>
+      <div class="tab" data-tab="json">JSON</div>
+    </div>
+
+    <div class="tabbody">
+      <div class="pane active" id="pane-items" style="display:flex; flex-direction:column; padding:0;">
+        <div class="items-filter-bar" id="itemsFilterBar" style="display:none">
+          <span class="if-chip active" data-flt="all">全部 <span id="cnt-all">0</span></span>
+          <span class="if-chip" data-flt="rec">已识别 <span id="cnt-rec">0</span></span>
+          <span class="if-chip" data-flt="high">高置信(≥60%) <span id="cnt-high">0</span></span>
+          <span class="if-chip" data-flt="special">艺术字/二维码 <span id="cnt-special">0</span></span>
+          <span class="if-chip" data-flt="unrec">未识别框 <span id="cnt-unrec">0</span></span>
+        </div>
+        <div id="itemsContainer" style="flex:1; overflow-y:auto;">
+          <div style="color:var(--muted);font-size:12px;padding:14px" id="itemsPlaceholder">上传图片后点击「识别」</div>
+        </div>
+      </div>
+      <div class="pane" id="pane-understand">
+        <div style="color:var(--muted);font-size:12px;padding:14px" id="understandPlaceholder">上传图片后点击「✦ AI 理解」，让 VLM 看懂这张图</div>
+      </div>
+      <div class="pane" id="pane-verify">
+        <div class="verify-input">
+          <div class="verify-hint">
+            维护标准文案（要核对的文字）。每行一条；行内可加 <code>=选填</code> 标记该条为可选，或 <code>#分组</code> 归类。例：<code>净含量450g #净含量</code>。
+            也可直接粘贴 JSON 数组：<code>[{"text":"…","required":false,"category":"…"}]</code>。
+          </div>
+          <textarea id="verifyStandard" rows="6" placeholder="品名：鲜奶茶&#10;净含量：450g #净含量&#10;生产日期：见包装=选填"></textarea>
+          <div class="action-row">
+            <button class="btn primary" id="runVerifyBtn" disabled>✓ 开始校验</button>
+          </div>
+        </div>
+        <div id="verifyResults"></div>
+      </div>
+      <div class="pane" id="pane-debug">
+        <div style="color:var(--muted);font-size:12px;padding:14px" id="debugPlaceholder">上传图片后点击「识别」,此处展示漏斗各阶段计数与 VLM 兜底前后变化</div>
+      </div>
+      <div class="pane" id="pane-json"><pre class="json" id="jsonOut"></pre></div>
     </div>
   </div>
 </div>
+
 
 <script>
 const $ = id => document.getElementById(id);
@@ -926,9 +1081,21 @@ function bindItemPolygon(el, idx) {
   el.dataset.idx = String(idx);
 }
 
+function isItemMatchFilter(it, filterKey) {
+  if (!filterKey || filterKey === 'all') return true;
+  const isUnrec = it.recognized === false || it.text === '[未识别框]';
+  if (filterKey === 'unrec') return isUnrec;
+  if (filterKey === 'rec') return !isUnrec;
+  if (filterKey === 'high') return !isUnrec && (it.confidence || 0) >= 0.6;
+  if (filterKey === 'special') return ['art_text', 'qr', 'barcode'].includes(it.type);
+  return true;
+}
+
 function drawItemPolygons() {
+  const flt = view.filter || 'all';
   view.items.forEach((it, idx) => {
     if (!it.polygon || it.polygon.length < 3) return;
+    if (!isItemMatchFilter(it, flt)) return;
     const cls = it.type==='art_text'?'art':it.type==='qr'?'qr':it.type==='barcode'?'barcode':'';
     const hl = itemIsHighlighted(idx) ? ' hl' : '';
     if (it.granularity === 'paragraph' && it.lines && it.lines.length > 1) {
@@ -1189,9 +1356,9 @@ $('reset').onclick=fit; $('fit').onclick=fit;
 // =========================================================================
 // params state
 // =========================================================================
-const DEFAULTS = { thresh:0.3, box:0.8, unclip:1.8, sidelen:960, limittype:'max',
+const DEFAULTS = { thresh:0.35, box:0.65, unclip:1.6, sidelen:960, limittype:'max',
                    rec:0, orient:true, gap:0.6, xov:0.3, gran:'line', engine:'paddleocr',
-                   minconf:0.75, minchars:3 };
+                   minconf:0, minchars:0, keep_unrecognized:true };
 const params = {...DEFAULTS};
 
 function syncParamUI() {
@@ -1206,6 +1373,7 @@ function syncParamUI() {
   $('p_xov').value = params.xov; $('v_xov').textContent = params.xov.toFixed(2);
   $('p_minconf').value = params.minconf; $('v_minconf').textContent = params.minconf.toFixed(2);
   $('p_minchars').value = params.minchars; $('v_minchars').textContent = String(params.minchars);
+  $('p_keep_unrecognized').checked = params.keep_unrecognized;
   document.querySelectorAll('#granSeg button').forEach(b=>b.classList.toggle('active', b.dataset.v===params.gran));
   document.querySelectorAll('#engineSeg button').forEach(b=>b.classList.toggle('active', b.dataset.v===params.engine));
   syncEngineUI();
@@ -1264,6 +1432,7 @@ bind('p_gap','v_gap','gap', v=>v.toFixed(2));
 bind('p_xov','v_xov','xov', v=>v.toFixed(2));
 bind('p_minconf','v_minconf','minconf', v=>v.toFixed(2));
 bind('p_minchars','v_minchars','minchars', v=>String(v));
+$('p_keep_unrecognized').addEventListener('change', e=>{params.keep_unrecognized=e.target.checked;markChanged();});
 document.querySelectorAll('#granSeg button').forEach(b=>b.addEventListener('click',()=>{
   params.gran = b.dataset.v;
   document.querySelectorAll('#granSeg button').forEach(x=>x.classList.toggle('active',x===b));
@@ -1295,9 +1464,10 @@ function buildOptions() {
     if (params.rec > 0) o.text_rec_score_thresh = params.rec;
     if (params.orient !== DEFAULTS.orient) o.use_textline_orientation = params.orient;
   }
-  // 内容清洗参数是 pipeline 级（与引擎无关），vlm 引擎下也生效，故放分支外。
-  if (params.minconf !== DEFAULTS.minconf) o.min_keep_confidence = params.minconf;
-  if (params.minchars !== DEFAULTS.minchars) o.min_text_chars = params.minchars;
+  // 内容清洗与全量结果参数是 pipeline 级（与引擎无关），默认全量展示
+  o.min_keep_confidence = params.minconf;
+  o.min_text_chars = params.minchars;
+  o.keep_unrecognized = params.keep_unrecognized;
   return o;
 }
 
@@ -1463,23 +1633,25 @@ function renderPanelList(data) {
 // VLM provider config flow (GET/POST /config/vlm, persisted to .env)
 // =========================================================================
 
-// --- modal open/close (extracted config panel) ---
-// Clicking the left-panel entry opens the modal; ESC and backdrop-click close.
-$('vlmConfigEntry').addEventListener('click', e => {
-  e.preventDefault();                 // stop the <details> from toggling open
-  openVlmModal();
-});
-function openVlmModal() {
-  $('vlmModal').classList.add('open');
-}
-function closeVlmModal() {
-  $('vlmModal').classList.remove('open');
-}
-document.addEventListener('keydown', e => {
-  if (e.key === 'Escape' && $('vlmModal').classList.contains('open')) closeVlmModal();
-});
+// VLM config is now inline in the sidebar VLM tab (no modal).
+// openVlmModal / closeVlmModal kept as no-ops for safety.
+function openVlmModal() {}
+function closeVlmModal() {}
 
 $('saveVlmBtn').addEventListener('click', saveVlmConfig);
+
+// =========================================================================
+// Sidebar 3-tab switcher (图片&预处理 | VLM | Paddle)
+// =========================================================================
+document.querySelectorAll('.sidebar-tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    const stab = tab.dataset.stab;
+    document.querySelectorAll('.sidebar-tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.sidebar-pane').forEach(p => p.classList.remove('active'));
+    tab.classList.add('active');
+    document.getElementById('stab-' + stab).classList.add('active');
+  });
+});
 
 function _setModelSelect(model) {
   // Select the dropdown option matching `model`; if none matches, switch to the
@@ -2016,6 +2188,93 @@ function handleUrl(rawUrl) {
 $('loadUrlBtn').addEventListener('click', () => handleUrl($('urlInput').value));
 $('urlInput').addEventListener('keydown', e => { if (e.key === 'Enter') handleUrl($('urlInput').value); });
 
+// =========================================================================
+// Quick sample URLs (test fixtures)
+// =========================================================================
+function loadSample(url) {
+  if (!url) return;
+  const input = $('urlInput');
+  if (input) input.value = url;
+  handleUrl(url);
+}
+window.loadSample = loadSample;
+
+// Global click listener for any element with data-url attribute
+document.addEventListener('click', e => {
+  const el = e.target.closest('[data-url]');
+  if (el) {
+    const url = el.dataset.url;
+    if (url) {
+      e.preventDefault();
+      loadSample(url);
+    }
+  }
+});
+
+// =========================================================================
+// Detection history (localStorage, up to 10 entries)
+// =========================================================================
+const HISTORY_KEY = 'ocr_agent_history';
+const HISTORY_MAX = 10;
+
+function histShortenUrl(url) {
+  if (!url) return '文件上传';
+  try {
+    const parts = new URL(url).pathname.split('/');
+    const fname = parts[parts.length - 1] || url;
+    return fname.length > 42 ? fname.slice(0, 20) + '…' + fname.slice(-12) : fname;
+  } catch { return url.slice(-42); }
+}
+
+function histEsc(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function histLoadRaw() {
+  try { return JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]'); } catch { return []; }
+}
+
+function histSave(entry) {
+  // entry: { url, label, time, count, types }
+  let h = histLoadRaw();
+  // Remove duplicate (same URL, skip for file uploads where url is empty)
+  if (entry.url) h = h.filter(x => x.url !== entry.url);
+  h.unshift(entry);
+  if (h.length > HISTORY_MAX) h = h.slice(0, HISTORY_MAX);
+  try { localStorage.setItem(HISTORY_KEY, JSON.stringify(h)); } catch(e) {}
+  renderHistory();
+}
+
+function renderHistory() {
+  const hist = histLoadRaw();
+  const sec = $('historySection');
+  const list = $('historyList');
+  if (!hist.length) { sec.style.display = 'none'; return; }
+  sec.style.display = '';
+  list.innerHTML = hist.map(h => {
+    const label = h.label || histShortenUrl(h.url || '');
+    const d = new Date(h.time);
+    const timeStr = isNaN(d) ? '' : d.toLocaleString('zh-CN', {month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
+    const cnt = h.count != null ? `${h.count} 项` : '';
+    const typePart = h.types ? ` · ${h.types}` : '';
+    const meta = [timeStr, cnt + typePart].filter(Boolean).join(' · ');
+    const hasUrl = !!h.url;
+    const dataAttr = hasUrl ? `data-url="${histEsc(h.url)}"` : '';
+    return `<div class="hist-item${hasUrl ? '' : ' no-url'}" ${dataAttr} title="${histEsc(h.url || label)}">
+      <span class="hist-name">${histEsc(label)}</span>
+      <div class="hist-meta">${histEsc(meta)}</div>
+    </div>`;
+  }).join('');
+}
+
+$('clearHistoryBtn').addEventListener('click', () => {
+  try { localStorage.removeItem(HISTORY_KEY); } catch(e) {}
+  renderHistory();
+});
+
+// Init history on page load
+renderHistory();
+
 $('recognizeBtn').addEventListener('click', recognize);
 $('clearBtn').addEventListener('click', clearAll);
 
@@ -2102,12 +2361,32 @@ $('pe_grayscale').addEventListener('change', e=>{pre.grayscale=e.target.checked;
 $('pe_threshold').addEventListener('change', e=>{pre.threshold=e.target.checked;});
 $('pe_morph').addEventListener('change', e=>{pre.morph_close=e.target.checked;});
 
+$('pe_master_enable').addEventListener('change', e => {
+  const enabled = e.target.checked;
+  const ctrls = $('preprocess_controls');
+  if (!enabled) {
+    ctrls.style.opacity = '0.4';
+    ctrls.style.pointerEvents = 'none';
+    if (preprocessApplied) {
+      revertPreprocess();
+    }
+    setStatus('图片预处理已禁用（识别时将跳过预处理使用原图）', '');
+  } else {
+    ctrls.style.opacity = '1';
+    ctrls.style.pointerEvents = 'initial';
+    setStatus('图片预处理已启用', '');
+  }
+});
+
 $('resetPreprocess').onclick = () => { Object.assign(pre, PRE_DEFAULTS); syncPreprocessUI(); };
 
 // Apply the selected enhancements server-side, then swap the viewer image to
 // the returned PNG. The enhanced bytes also become currentFile so subsequent
 // 「识别」 sends the enhanced image (not the original).
 async function applyPreprocess() {
+  if (!$('pe_master_enable').checked) {
+    setStatus('图片预处理已禁用，请先开启总开关', 'error'); return;
+  }
   if (!hasImage()) { setStatus('请先上传图片或加载链接','error'); return; }
   // Snapshot the current source as the "original" so revert is possible.
   // (First apply only; re-applying keeps the same original so we don't stack.)
@@ -2245,6 +2524,14 @@ async function recognize() {
       data = await resp.json();
     }
     render(data);
+    // --- Save to detection history ---
+    {
+      const _label = currentUrl ? histShortenUrl(currentUrl) : (currentFile?.name || '上传文件');
+      const _typeMap = {};
+      data.items.forEach(it => { _typeMap[it.type] = (_typeMap[it.type] || 0) + 1; });
+      const _types = Object.entries(_typeMap).map(([t, n]) => `${t}×${n}`).join(' ') || null;
+      histSave({ url: currentUrl || '', label: _label, time: new Date().toISOString(), count: data.items.length, types: _types });
+    }
     const elapsed = formatElapsed(performance.now() - t0);
     const gran = data.options_used?.granularity || params.gran;
     const eng = (data.options_used?.engine) || params.engine;
@@ -2272,26 +2559,76 @@ async function pollTask(taskId) {
   throw new Error('处理超时');
 }
 
+function applyItemsFilter() {
+  const flt = view.filter || 'all';
+  const container = $('itemsContainer');
+  const items = container.querySelectorAll('.item[data-idx]');
+  let visibleCount = 0;
+  items.forEach(el => {
+    const idx = parseInt(el.dataset.idx, 10);
+    const it = view.items[idx];
+    if (it && isItemMatchFilter(it, flt)) {
+      el.style.display = '';
+      visibleCount++;
+    } else {
+      el.style.display = 'none';
+    }
+  });
+  $('count').textContent = `(${visibleCount}/${view.items.length})`;
+  drawPolygons();
+}
+
+// Bind click on funnel filter chips
+document.querySelectorAll('#itemsFilterBar .if-chip').forEach(chip => {
+  chip.addEventListener('click', () => {
+    document.querySelectorAll('#itemsFilterBar .if-chip').forEach(c => c.classList.remove('active'));
+    chip.classList.add('active');
+    view.filter = chip.dataset.flt;
+    applyItemsFilter();
+  });
+});
+
 function render(data) {
-  view.items = data.items;
+  view.items = data.items || [];
   view.selectedIdx = -1;
   view.activeIdx = -1;
+  view.filter = 'all';
   view.lastData = data;  // retained so the debug tab can re-render on switch
+
+  // Compute funnel counts for filter chips
+  let cAll = view.items.length;
+  let cRec = 0, cHigh = 0, cSpecial = 0, cUnrec = 0;
+  view.items.forEach(it => {
+    const isUnrec = it.recognized === false || it.text === '[未识别框]';
+    if (isUnrec) { cUnrec++; }
+    else { cRec++; }
+    if (!isUnrec && (it.confidence || 0) >= 0.6) cHigh++;
+    if (['art_text', 'qr', 'barcode'].includes(it.type)) cSpecial++;
+  });
+
+  $('cnt-all').textContent = String(cAll);
+  $('cnt-rec').textContent = String(cRec);
+  $('cnt-high').textContent = String(cHigh);
+  $('cnt-special').textContent = String(cSpecial);
+  $('cnt-unrec').textContent = String(cUnrec);
+
+  document.querySelectorAll('#itemsFilterBar .if-chip').forEach(c => {
+    c.classList.toggle('active', c.dataset.flt === 'all');
+  });
+  $('itemsFilterBar').style.display = view.items.length ? 'flex' : 'none';
+
   drawPolygons();
   $('meta').textContent = `${data.image_meta.width}×${data.image_meta.height} · ${data.image_meta.tile_count} tile`;
-  $('count').textContent = `(${data.items.length})`;
-  const pane = $('pane-items'); pane.innerHTML = '';
+  $('count').textContent = `(${view.items.length})`;
+
+  const container = $('itemsContainer'); container.innerHTML = '';
   if (data.items.length === 0) {
-    pane.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:14px">没有检测到内容</div>';
+    container.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:14px">没有检测到内容</div>';
   }
   data.items.forEach((it, idx) => {
     const cls = it.type==='art_text'?'art':it.type==='qr'?'qr':it.type==='barcode'?'barcode':'';
     const label = it.text || it.content || '(空)';
     const gran = it.granularity ? `<span class="gran">${it.granularity}</span>` : '';
-    // Light debug badge on the main card: surface VLM involvement at a glance.
-    // vlm_lifted true  → VLM re-read succeeded (green)
-    //            false → VLM looked but couldn't read (grey)
-    //   source vlm_fallback (incl. ring rescue, which doesn't set vlm_lifted)
     const vlmBadge = it.source === 'vlm_fallback'
       ? '<span class="vbadge src">VLM源</span>'
       : it.vlm_lifted === true ? '<span class="vbadge ok">VLM✓</span>'
@@ -2311,7 +2648,7 @@ function render(data) {
       if (view.activeIdx === idx) { view.activeIdx = -1; drawPolygons(); }
     });
     div.addEventListener('click', () => selectItem(idx, { pan: true }));
-    pane.appendChild(div);
+    container.appendChild(div);
   });
   $('jsonOut').textContent = JSON.stringify(data, null, 2);
   renderDebug(data);

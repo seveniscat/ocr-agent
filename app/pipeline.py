@@ -1,10 +1,16 @@
 """Pipeline orchestration.
 
-Flow (v1 scope: long edge ≤ 4000px):
-    load image → [optional autocrop]
-    → if long edge ≤ 4000: single PaddleOCR.predict() on full image
-    → else: tile grid (future / >4000 async path)
-    → optional paragraph merge → optional VLM fallback → dedupe → return
+/analyze funnel (5 steps):
+    1. PaddleOCR detects + recognizes text.
+       - confidence >= 0.95 → accept directly (no VLM needed).
+    2. confidence < 0.95 → denoised by min_box_side, then sent to VLM for
+       a second read (_maybe_vlm_fallback).
+    3. VLM success (non-empty text) → replace OCR text; source="vlm_fallback",
+       vlm_lifted=True. Geometry always from PaddleOCR.
+    4. VLM fail / empty → revert to original OCR text; safety net: discard
+       items with confidence < 0.7 (rec_confidence_vlm_drop).
+    5. Final filter: discard items whose effective text length < 3 chars
+       (min_text_chars=3, applied by _clean_items).
 
 The pipeline is a thin coordinator: each stage lives in its own module so it
 can be swapped or unit-tested independently.
@@ -316,16 +322,14 @@ class Pipeline:
         )
         n_cleaned = n_before_clean - len(all_items)
 
-        # --- confidence policy (POST /analyze only): the SINGLE /analyze-specific
-        # cut. The universal floor (min_keep_confidence) already ran in
-        # _clean_items above, so every remaining text box is at or above that
-        # floor; re-applying rec_confidence_drop here would be redundant when the
-        # two defaults match (0.6). What /analyze adds on top is the VLM-gate:
-        # a box the VLM looked at but couldn't read (vlm_lifted is False) AND
-        # whose confidence is still below rec_confidence_vlm_drop — nobody could
-        # read it confidently, so /analyze discards it. /verify opts out
-        # (confidence_policy=False) because it needs every OCR'd character.
-        # qr/barcode are never dropped (different confidence semantics). ---
+        # --- confidence policy (POST /analyze only): funnel step 4.
+        # _clean_items (step 5: min_text_chars filter) already ran above.
+        # Now apply the VLM-fail safety net: a box the VLM looked at but
+        # returned empty (vlm_lifted is False) AND whose PaddleOCR confidence
+        # is < rec_confidence_vlm_drop (0.7) → drop. Boxes the VLM rescued
+        # (vlm_lifted=True) or that never went to VLM (conf >= 0.95, vlm_lifted
+        # is None) are kept unconditionally. /verify opts out
+        # (confidence_policy=False). qr/barcode are never dropped. ---
         n_dropped = 0
         vlm_drop_threshold_used = 0.0
         if confidence_policy:
@@ -505,6 +509,7 @@ class Pipeline:
 
         # OCR always emits lines; paragraph merge runs globally after all tiles.
         ocr_gran = "line"
+        emit_crops_flag = True if (options and options.keep_unrecognized) else None
 
         for spec in specs:
             tile = crop_tile(img, spec)
@@ -514,6 +519,7 @@ class Pipeline:
                 tile,
                 predict_kwargs=predict_kwargs,
                 granularity=ocr_gran,
+                emit_crops=emit_crops_flag,
             ):
                 global_poly = offset_polygon(det.polygon, spec.x0, spec.y0)
                 # if paragraph mode, offset the per-line quads too
@@ -571,24 +577,27 @@ class Pipeline:
         """Re-recognize hard text regions via the VLM: low-confidence crops AND
         circular/ring-shaped regions.
 
-        Two kinds of "hard" regions are collected and sent to the VLM in one
-        batched, concurrent pass (8-way thread pool — N crops = N independent
-        HTTP calls, NOT a packed multi-image request):
+        Implements funnel steps 2–4 of the /analyze pipeline:
 
-        - **Low-confidence suspects**: text items below ``rec_confidence_fallback``
-          (default 0.95). Sent with the provider's built-in art-text prompt.
-        - **Circular regions**: rings of text around logos/seals/badges, found by
-          :func:`app.regions.detect_circular_regions` (pure geometry). Each whole
-          ring is cropped as its bounding box and sent with ``_CIRCULAR_PROMPT``
-          — the VLM reads the arc-arranged characters. Members of a detected
-          ring are EXCLUDED from the low-confidence set so they aren't sent
-          twice.
+        - **Step 2**: PaddleOCR items with confidence < ``rec_confidence_fallback``
+          (default 0.95) are treated as suspects. Small boxes (both sides below
+          ``min_box_side``) are filtered out first (denoising) so we don't waste
+          a cloud call on detector noise. The remaining suspects are sent to the
+          VLM for a second read.
+        - **Step 3**: VLM success (non-empty text returned) → replace the OCR
+          text with the VLM read. ``source`` becomes ``"vlm_fallback"``;
+          ``vlm_lifted=True``. Geometry (polygon/bbox) ALWAYS stays from
+          PaddleOCR — the VLM only supplies text.
+        - **Step 4**: VLM failure / empty return → ``vlm_lifted=False``; the
+          original PaddleOCR text and confidence are kept. ``_drop_low_confidence``
+          (called after this method) will then discard boxes with
+          ``confidence < rec_confidence_vlm_drop`` (default 0.7), implementing
+          the “VLM fail → keep only conf ≥ 0.7” safety net.
 
-        Geometry (polygon/bbox) ALWAYS stays from PaddleOCR — the VLM only
-        supplies text. Results are written back with ``source="vlm_fallback"``.
-        For a circular region, the recognized ring text goes onto ONE
-        representative member (the top-most); other members keep their original
-        text to avoid duplicating the ring string across several boxes.
+        **Circular regions** (rings of text around logos/seals/badges) are
+        handled alongside suspects in a single batched VLM call. Members of a
+        detected ring are excluded from the suspect set so they aren't sent
+        twice.
 
         Returns ``(items, n_crops, stats)``: ``n_crops`` is the total number of
         crops sent (suspects + rings), so the timing log reflects how many
@@ -606,25 +615,18 @@ class Pipeline:
             logger.warning("VLM unavailable, skipping fallback: %s", exc)
             return items, 0, {}
 
-        threshold = self.settings.rec_confidence_fallback
-        # Floor below which sending a crop to the VLM is pure waste: a box the
-        # universal cleanup will discard anyway (confidence < min_keep_confidence)
-        # goes no matter what the VLM returns — the VLM no longer contributes to
-        # confidence (it's the pure PaddleOCR score), so a 0.40 box stays 0.40
-        # and can't clear the universal floor. Skip the cloud call.
+        threshold = self.settings.rec_confidence_fallback  # 0.95 default
+        # Floor below which sending a crop to the VLM is pure waste.
+        # New funnel (step 2): ALL items with conf < threshold (0.95) are sent
+        # to the VLM after small-box denoising. The _too_small() check below
+        # handles the denoising — boxes too small in both dimensions are skipped
+        # here (they'll be cleaned by _clean_items anyway).
         #
-        # NOTE: this floor is intentionally ONLY the universal min_keep_confidence,
-        # NOT the /analyze-specific rec_confidence_drop. The /analyze drop policy
-        # is applied AFTER the VLM pass (see _drop_low_confidence), so a box in
-        # [min_keep_confidence, rec_confidence_drop) deserves a VLM second
-        # opinion before being dropped — seals/art text are systematically
-        # low-scored by PaddleOCR yet readable by the VLM. Folding rec_confidence_
-        # drop into the floor would starve that band of VLM rescues.
-        #
-        # /verify is EXEMPT from this floor: it runs cleanup with keep_short=True
-        # (low-confidence text is kept) because it needs every readable char to
-        # match required copy, so a low PaddleOCR box that the VLM CAN read is
-        # valuable there.
+        # /analyze: vlm_floor = min_keep_confidence (default 0.0 — disabled),
+        # meaning even very low-confidence boxes get a VLM read; the post-VLM
+        # safety net (step 4, _drop_low_confidence) will drop conf < 0.7 when
+        # VLM fails, so sending them here is worthwhile.
+        # /verify: exempt from the floor (needs every readable char).
         if for_verify:
             vlm_floor = 0.0
         else:
@@ -852,6 +854,12 @@ class Pipeline:
         # does not, so we build the class from unicodedata at import time.
         _edge_junk = _EDGE_JUNK_RE
 
+        keep_unrec = (
+            options.keep_unrecognized
+            if options and options.keep_unrecognized is not None
+            else False
+        )
+
         kept: list[Item] = []
         n_empty = n_unrec = n_short = n_small = n_low = 0
         for it in items:
@@ -859,14 +867,17 @@ class Pipeline:
             if it.type not in ("text", "art_text"):
                 kept.append(it)
                 continue
-            # Rule 1: empty text.
-            if not it.text or not it.text.strip():
-                n_empty += 1
-                continue
-            # Rule 2: unrecognized box.
-            if not it.recognized:
-                n_unrec += 1
-                continue
+            # Rule 1 & Rule 2: empty text or unrecognized box.
+            if not it.text or not it.text.strip() or not it.recognized:
+                if keep_unrec:
+                    if not it.text or not it.text.strip():
+                        it.text = "[未识别框]"
+                else:
+                    if not it.text or not it.text.strip():
+                        n_empty += 1
+                    else:
+                        n_unrec += 1
+                    continue
             if not keep_short:
                 # Rule 4 (checked before junk-short, since a tiny box is noise
                 # regardless of its text content): BOTH bbox dimensions below
@@ -910,47 +921,50 @@ class Pipeline:
         }
 
     def _drop_low_confidence(self, items: list[Item]) -> list[Item]:
-        """Discard text items per the /analyze confidence policy.
+        """Discard text items per the /analyze confidence policy (funnel step 4).
 
         Called only on the POST /analyze path (``confidence_policy=True``).
         Runs AFTER the VLM fallback pass AND AFTER the universal
         ``_clean_items`` floor (``min_keep_confidence``), so every remaining
         text item is already at or above that universal floor.
 
-        The SINGLE /analyze-specific rule (the universal floor does NOT cover
-        it): a box that was SENT to the VLM fallback but produced no readable
-        text (``vlm_lifted is False``: the VLM returned empty/garbage), AND
-        whose confidence is still below ``rec_confidence_vlm_drop`` (default
-        0.85). Since the VLM no longer contributes to ``confidence`` (it's the
-        pure PaddleOCR score), this drops boxes where BOTH PaddleOCR was unsure
-        AND the VLM couldn't read it either — nobody could read it confidently.
+        **Funnel step 4 — VLM fail safety net:**
+        When VLM re-read was attempted on a suspect box but returned empty
+        (``vlm_lifted is False``), fall back to the original PaddleOCR result
+        and apply a confidence safety net:
 
-        Why ``rec_confidence_drop`` is no longer applied here: the universal
-        ``_clean_items`` rule-4 already cuts everything below
-        ``min_keep_confidence`` on ALL paths (including /analyze). When the two
-        defaults match (0.6), a second cut here was pure redundancy; when they
-        differ, the universal rule is the correct single source of truth for
-        "never keep below this". /analyze's ONLY addition is the VLM-gate above.
+        - Keep items with ``confidence >= rec_confidence_vlm_drop`` (default 0.7)
+        - Discard items with ``confidence < rec_confidence_vlm_drop``
+
+        Items where the VLM succeeded (``vlm_lifted=True``) or that never went
+        through the VLM (PaddleOCR confidence ≥ ``rec_confidence_fallback`` = 0.95
+        — accepted directly in step 1) are NOT dropped by this rule.
 
         Only ``type == "text"`` items are dropped — ``art_text`` is treated as
         high-value copy (it survived the detector's art-text path) and qr/barcode
         confidence has different semantics; those decoded payloads are valuable
         regardless of score.
+
+        **Note on step 5 (final char-length filter):** The ``min_text_chars``
+        filter (default 3, applied in ``_clean_items``) acts as the final funnel
+        step — it runs before this method and drops results with fewer than 3
+        effective characters.
         """
-        vlm_drop = self.settings.rec_confidence_vlm_drop
+        vlm_drop = self.settings.rec_confidence_vlm_drop  # 0.70 default
         kept = [
             it for it in items
             if it.type != "text"
-            # The single rule: a box the VLM looked at but couldn't read
-            # (``vlm_lifted is False``) AND the PaddleOCR score is also below
-            # vlm_drop — nobody could read it confidently. Drop it.
+            # Funnel step 4: box went to VLM but VLM returned empty/failed
+            # (vlm_lifted is False) AND PaddleOCR score is also < 0.7 → drop.
+            # Boxes the VLM rescued (vlm_lifted=True) or that never went to VLM
+            # (conf >= rec_confidence_fallback → vlm_lifted is None) are kept.
             or not (it.vlm_lifted is False and it.confidence < vlm_drop)
         ]
         n_drop = len(items) - len(kept)
         if n_drop:
             logger.info(
-                "confidence policy: dropped %d/%d text items "
-                "(vlm-not-lifted & conf<%.2f; kept qr/barcode/art_text)",
+                "confidence policy (funnel step 4): dropped %d/%d text items "
+                "(vlm-fail & conf<%.2f; kept vlm-rescued, high-conf, qr/barcode/art_text)",
                 n_drop, len(items), vlm_drop,
             )
         return kept

@@ -54,25 +54,23 @@ class Settings(BaseSettings):
 
     # ---- OCR detection tuning (DB++ text detector) ----
     ocr_threshold: float = Field(
-        0.3, ge=0.0, le=1.0,
+        0.35, ge=0.0, le=1.0,
         description="Pixel prob threshold for the DB shrink map. "
                     "Lower → more boxes (recall up) but more noise.",
     )
     ocr_box_thresh: float = Field(
-        0.8, ge=0.0, le=1.0,
+        0.65, ge=0.0, le=1.0,
         description="Min average score inside a candidate box for it to be kept. "
                     "Lower → keeps faint art text.",
     )
     ocr_unclip_ratio: float = Field(
-        1.8, ge=0.5, le=5.0,
+        1.6, ge=0.5, le=5.0,
         description="Expand each detected box by this ratio. Larger → looser "
                     "boxes (helps catch art text whose glyphs bleed past the shrink map).",
     )
     ocr_det_limit_side_len: int = Field(
-        1216, ge=320, le=4096,
-        description="DB detector resizes the long edge to this before inference. "
-                    "1216 is the PaddleOCR 3.x recommendation for higher-res inputs "
-                    "(≤4000px long edge, single-tile path).",
+        960, ge=320, le=4096,
+        description="DB detector resizes the long edge to this before inference.",
     )
     ocr_det_limit_type: Literal["max", "min"] = Field(
         "max",
@@ -144,44 +142,46 @@ class Settings(BaseSettings):
                     "auto. Turn off if you see TRT accuracy regressions.",
     )
     rec_confidence_fallback: float = Field(
-        0.94, ge=0.0, le=1.0,
+        0.95, ge=0.0, le=1.0,
         description="[vlm_ocr_fallback] Recognition confidence below which a crop "
-                    "is re-read by the VLM. Default 0.94 — any text box PaddleOCR "
-                    "isn't 94% sure of gets cropped and sent to the VLM for a second "
+                    "is re-read by the VLM. Default 0.95 — any text box PaddleOCR "
+                    "isn't 95% sure of gets cropped and sent to the VLM for a second "
                     "read (only when vlm_ocr_fallback_enabled + vlm_enabled are on). "
-                    "Pairs with rec_confidence_drop: boxes in [drop, fallback) are "
-                    "VLM re-read, boxes below drop are discarded (POST /analyze only).",
+                    "Funnel: conf >= 0.95 → accept directly; conf < 0.95 → VLM "
+                    "re-read (after small-box denoising). VLM success replaces OCR "
+                    "text; VLM failure falls back to OCR keeping conf >= 0.7 only.",
     )
     rec_confidence_drop: float = Field(
-        0.60, ge=0.0, le=1.0,
-        description="[/analyze] Text boxes whose FINAL confidence is below this are "
-                    "discarded from /analyze results (after the VLM fallback pass). "
-                    "Default 0.60 — a box PaddleOCR scored <60% that the VLM couldn't "
-                    "lift above 60% is dropped. Only text items are dropped; qr/barcode "
-                    "are kept. Applied on POST /analyze only (/verify keeps all boxes). "
-                    "Must be ≤ rec_confidence_fallback.",
+        0.70, ge=0.0, le=1.0,
+        description="[/analyze] When the VLM fallback fails or returns empty for a "
+                    "suspect box, this is the OCR-score floor applied as a safety net. "
+                    "Funnel step 4: VLM fail → discard items with confidence < 0.7, "
+                    "keep items with confidence >= 0.7. Only text items are dropped; "
+                    "qr/barcode are kept. Applied on POST /analyze only (/verify keeps "
+                    "all boxes). Must be <= rec_confidence_fallback.",
     )
     rec_confidence_vlm_drop: float = Field(
-        0.85, ge=0.0, le=1.0,
-        description="[/analyze] Independent from rec_confidence_drop. A text box that "
-                    "was SENT to the VLM fallback but whose confidence was NOT lifted "
-                    "(vlm_lifted=False: new_conf <= original, or the VLM returned empty), "
-                    "AND whose final confidence is still below this, is discarded. "
-                    "Default 0.85 — a box the VLM looked at but couldn't improve, "
-                    "sitting in [0.60, 0.85), is dropped. Boxes the VLM lifted, or that "
-                    "never went through the VLM, are unaffected by this rule. /analyze "
-                    "only; qr/barcode always kept.",
+        0.70, ge=0.0, le=1.0,
+        description="[/analyze] Confidence floor for the VLM-not-lifted drop policy. "
+                    "A text box that was SENT to the VLM fallback but the VLM returned "
+                    "empty (vlm_lifted=False), AND whose PaddleOCR confidence is still "
+                    "below this, is discarded. Default 0.70 — funnel step 4: VLM fail "
+                    "→ keep conf >= 0.7, discard conf < 0.7. Boxes the VLM rescued "
+                    "(vlm_lifted=True), or that never went through the VLM (conf >= "
+                    "rec_confidence_fallback), are unaffected. /analyze only; "
+                    "qr/barcode always kept.",
     )
     min_text_chars: int = Field(
-        2, ge=0, le=50,
+        3, ge=0, le=50,
         description="Universal content-quality filter (all paths except /verify): "
                     "a text/art_text item whose text, after stripping leading/"
                     "trailing whitespace AND punctuation, has fewer than this many "
                     "effective characters is dropped as noise (e.g. '.', '，', '-', "
                     "a lone digit). Catches detector garbage that survives the "
-                    "confidence gate. Set 1 to keep single characters, 0 to disable. "
-                    "/verify is exempt (every char may match required copy). "
-                    "qr/barcode always kept.",
+                    "confidence gate. Default 3 — final funnel step drops results "
+                    "with fewer than 3 effective characters. Set 1 to keep single "
+                    "characters, 0 to disable. /verify is exempt (every char may "
+                    "match required copy). qr/barcode always kept.",
     )
     min_keep_confidence: float = Field(
         0.0, ge=0.0, le=1.0,

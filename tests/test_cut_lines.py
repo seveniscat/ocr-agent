@@ -195,7 +195,7 @@ def test_panels_vlm_endpoint_returns_lines(monkeypatch):
                           {"pos": 300, "orientation": "v", "confidence": 0.85}],
                 "model": "test", "error": None}
 
-    monkeypatch.setattr(main_mod, "_settings", lambda: Settings())
+    monkeypatch.setattr(main_mod, "_settings", lambda: Settings(vlm_enabled=True))
     # Stub _get_understand_vlm so the gate passes without a real key.
     monkeypatch.setattr(main_mod, "_get_understand_vlm", lambda: object())
     monkeypatch.setattr(

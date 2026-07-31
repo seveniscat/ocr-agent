@@ -240,7 +240,9 @@ def _stub_pipeline(monkeypatch, items: list[Item]):
     """Make _get_pipeline().run return a fixed AnalyzeResponse with `items`."""
     resp = AnalyzeResponse(image_meta=ImageMeta(width=8, height=8), items=items)
     pipeline = main_mod._get_pipeline()
-    monkeypatch.setattr(pipeline, "run", lambda data, annotate=False, options=None: resp)
+    monkeypatch.setattr(
+        pipeline, "run", lambda data, annotate=False, options=None, **kwargs: resp
+    )
 
 
 def _settings(**overrides) -> Settings:

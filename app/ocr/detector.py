@@ -102,6 +102,14 @@ def _quad_bbox(poly):
     return min(xs), min(ys), max(xs), max(ys)
 
 
+def _poly_to_rect_quad(poly) -> list[list[float]]:
+    """Convert any polygon/quad into an axis-aligned rectangle quad [[x1,y1],[x2,y1],[x2,y2],[x1,y2]]."""
+    xs = [float(p[0]) for p in poly]
+    ys = [float(p[1]) for p in poly]
+    x1, y1, x2, y2 = min(xs), min(ys), max(xs), max(ys)
+    return [[x1, y1], [x2, y1], [x2, y2], [x1, y2]]
+
+
 def _x_overlap_ratio(a, b) -> float:
     """Overlap ratio of two x-ranges [ax1,ax2] and [bx1,bx2] over the smaller width."""
     inter = max(0.0, min(a[1], b[1]) - max(a[0], b[0]))
@@ -406,7 +414,7 @@ class OCREngine:
             poly = polys[i]
             if poly is None or len(poly) < 4:
                 continue
-            poly_list = [[float(p[0]), float(p[1])] for p in poly[:4]]
+            poly_list = _poly_to_rect_quad(poly[:4])
             line_dets.append(
                 TextDetection(
                     polygon=poly_list,
@@ -467,7 +475,7 @@ class OCREngine:
         for poly in dt_polys:
             if poly is None or len(poly) < 4:
                 continue
-            poly_list = [[float(p[0]), float(p[1])] for p in poly[:4]]
+            poly_list = _poly_to_rect_quad(poly[:4])
             x1, y1, x2, y2 = _quad_bbox(poly_list)
             dt_bbox = [x1, y1, x2, y2]
             # Skip dt boxes already covered by a recognized box.
