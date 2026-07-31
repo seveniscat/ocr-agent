@@ -251,17 +251,17 @@ def test_pipeline_vlm_fallback_logs_sent_rescued_empty(monkeypatch, caplog):
 
 
 def test_pipeline_vlm_fallback_skips_below_floor(monkeypatch):
-    """Boxes scoring below max(rec_confidence_drop, min_keep_confidence) are
-    NOT sent to the VLM on the /analyze path — they'd be discarded downstream
-    regardless of what the VLM returns (confidence stays the PaddleOCR score)."""
+    """Boxes scoring below the universal floor (min_keep_confidence) are NOT
+    sent to the VLM on the /analyze path — they'd be discarded downstream by
+    _clean_items regardless of what the VLM returns (confidence stays the
+    PaddleOCR score). Note: since P1-3 the floor reads ONLY min_keep_confidence
+    (default 0.0 now), NOT rec_confidence_drop."""
     pipe = Pipeline(Settings())
     s = pipe.settings.model_copy(update={
         "vlm_enabled": True,
         "vlm_ocr_fallback_enabled": True,
         "rec_confidence_fallback": 0.99,
-        # floors: drop=0.60, min_keep=0.60 → vlm_floor=0.60
-        "rec_confidence_drop": 0.60,
-        "min_keep_confidence": 0.60,
+        "min_keep_confidence": 0.60,   # → vlm_floor=0.60
         "circular_detect_enabled": False,
     })
     pipe.settings = s
@@ -330,6 +330,121 @@ def test_pipeline_vlm_fallback_floor_exempt_for_verify(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Pipeline._clean_items — universal content-quality cleanup
+# ---------------------------------------------------------------------------
+
+
+def _txt(id_, text, conf=0.9, recognized=True, type_="text"):
+    return Item(
+        id=id_, type=type_, text=text, recognized=recognized,
+        polygon=[[0, 0], [10, 0], [10, 10], [0, 10]],
+        bbox=[0, 0, 10, 10], confidence=conf, source="paddleocr",
+    )
+
+
+def test_clean_items_returns_breakdown():
+    """_clean_items returns (kept, breakdown) with per-rule drop counts,
+    including the new 'small' (small-box) bucket."""
+    s = Settings().model_copy(update={
+        "min_text_chars": 2, "min_keep_confidence": 0.6, "min_box_side": 8,
+    })
+    pipe = Pipeline(s)
+    items = [
+        _txt("empty", "   "),
+        _txt("unrec", "x", recognized=False),
+        _txt("short", "."),                 # junk-short (1 effective char)
+        _txt("low", "ok", conf=0.3),        # low-confidence
+        _txt("good", "hello"),
+    ]
+    kept, br = pipe._clean_items(items)
+    assert {it.id for it in kept} == {"good"}
+    # 'small' is 0 here because _txt default bbox is 10x10 (>= 8 floor).
+    assert br == {"empty": 1, "unrec": 1, "short": 1, "small": 0, "low": 1}
+
+
+def test_clean_items_drops_small_boxes_by_min_side():
+    """The universal small-box noise filter: a text item whose bbox has EITHER
+    dimension shorter than min_box_side is dropped. Narrow-but-long boxes
+    (tall-thin column, wide-thin line) are NOT dropped — only tiny-in-both."""
+    s = Settings().model_copy(update={
+        "min_text_chars": 0, "min_keep_confidence": 0.0, "min_box_side": 8,
+    })
+    pipe = Pipeline(s)
+
+    def box(id_, x0, y0, x1, y1, text="ok"):
+        return Item(id=id_, type="text", text=text, recognized=True,
+                    polygon=[[x0,y0],[x1,y0],[x1,y1],[x0,y1]],
+                    bbox=[x0,y0,x1,y1], confidence=0.9, source="paddleocr")
+
+    items = [
+        box("tiny",   0, 0, 5, 5),    # 5x5  → both < 8 → dropped
+        box("wide_thin", 0, 0, 100, 4),  # 100x4 → h<8 but w>=8 → KEPT (narrow-but-long)
+        box("tall_thin", 0, 0, 4, 100),  # 4x100 → w<8 but h>=8 → KEPT
+        box("normal", 0, 0, 50, 20),   # kept
+    ]
+    kept, br = pipe._clean_items(items)
+    assert {it.id for it in kept} == {"wide_thin", "tall_thin", "normal"}
+    assert br["small"] == 1
+
+
+def test_clean_items_min_box_side_disabled():
+    """min_box_side=0 disables the small-box filter entirely."""
+    s = Settings().model_copy(update={
+        "min_text_chars": 0, "min_keep_confidence": 0.0, "min_box_side": 0,
+    })
+    pipe = Pipeline(s)
+    items = [Item(id="tiny", type="text", text="ok", recognized=True,
+                  polygon=[[0,0],[3,0],[3,3],[0,3]],
+                  bbox=[0,0,3,3], confidence=0.9, source="paddleocr")]
+    kept, br = pipe._clean_items(items)
+    assert {it.id for it in kept} == {"tiny"}
+    assert br["small"] == 0
+
+
+def test_clean_items_keeps_cjk_single_char():
+    """P0-2: a lone CJK character (e.g. license-plate prefix 京, seal text) must
+    NOT be stripped as 'junk' and dropped. The old \\W regex treated every
+    non-ASCII char as non-word and stripped it to empty → silent data loss."""
+    s = Settings().model_copy(update={"min_text_chars": 2, "min_keep_confidence": 0.0})
+    pipe = Pipeline(s)
+    items = [
+        _txt("cjk1", "京"),       # single CJK char — effective len 1 < 2, but
+                                  # it is a real character, not junk punctuation.
+        _txt("cjk2", "沪A"),      # CJK + ascii
+        _txt("jpn", "あ"),        # hiragana
+        _txt("kor", "한"),        # hangul
+    ]
+    # min_text_chars=2 would drop these IF the regex wrongly stripped CJK to
+    # empty. With the punctuation-only class, 京 stays len-1 → dropped by the
+    # junk-short rule (correct: <2 chars), but 京沪 (len 2) survives.
+    kept, _ = pipe._clean_items(items)
+    # Single chars are < min_text_chars=2 → dropped by rule-3 as too short.
+    # The POINT is they must be dropped for LENGTH, not because the regex
+    # treated them as punctuation. Verify by lowering min_text_chars to 1:
+    assert {it.id for it in kept} == {"cjk2"}
+
+    s2 = Settings().model_copy(update={"min_text_chars": 1, "min_keep_confidence": 0.0})
+    pipe2 = Pipeline(s2)
+    kept2, _ = pipe2._clean_items(items)
+    # Now ALL survive — proving the regex did NOT strip the CJK char away.
+    assert {it.id for it in kept2} == {"cjk1", "cjk2", "jpn", "kor"}
+
+
+def test_clean_items_strips_punctuation_but_not_cjk():
+    """Edge punctuation (CJK + ASCII) is stripped for the effective-length
+    measure, while inner letters/digits of all scripts are preserved."""
+    s = Settings().model_copy(update={"min_text_chars": 2, "min_keep_confidence": 0.0})
+    pipe = Pipeline(s)
+    items = [
+        _txt("punct_edges", "，上海。"),   # leading ，trailing 。 stripped → "上海" (2) kept
+        _txt("only_punct", "。。"),        # stripped → "" (0) dropped
+        _txt("ascii_punct", "-A-"),        # stripped → "A" (1) dropped
+    ]
+    kept, _ = pipe._clean_items(items)
+    assert {it.id for it in kept} == {"punct_edges"}
+
+
+# ---------------------------------------------------------------------------
 # Pipeline._drop_low_confidence — /analyze confidence policy (drop < threshold)
 # ---------------------------------------------------------------------------
 
@@ -351,21 +466,37 @@ def _code_item(id_, conf, type_="qr"):
     )
 
 
-def test_drop_low_confidence_drops_text_below_threshold():
-    """Text items below rec_confidence_drop are removed."""
+def test_drop_low_confidence_only_rule2_applies():
+    """After P0-1, _drop_low_confidence has a SINGLE rule (the VLM-gate):
+    drop a text item only when the VLM looked at it but couldn't read it
+    (vlm_lifted is False) AND its confidence is below rec_confidence_vlm_drop.
+
+    The plain confidence floor (old rule-1) is gone — that job belongs to the
+    universal _clean_items (min_keep_confidence), which runs earlier on every
+    path. So a low-confidence text item that never went through the VLM is NOT
+    dropped here regardless of its score.
+    """
     s = Settings().model_copy(update={
-        "rec_confidence_drop": 0.60,
+        "rec_confidence_drop": 0.60,        # no longer read by this method
         "rec_confidence_fallback": 0.94,
+        "rec_confidence_vlm_drop": 0.85,
     })
     pipe = Pipeline(s)
     items = [
-        _text_item("t1", 0.55),   # below 0.60 → dropped
-        _text_item("t2", 0.60),   # exactly 0.60 → kept (>=)
-        _text_item("t3", 0.80),   # kept
+        # Never sent to VLM (vlm_lifted=None): rule-2 inert → KEPT even at 0.10.
+        _text_item("keep_low", 0.10, vlm_lifted=None),
+        _text_item("keep_mid", 0.70, vlm_lifted=None),
+        # VLM failed AND conf < vlm_drop 0.85 → DROPPED.
+        _text_item("drop", 0.70, source="vlm_fallback", vlm_lifted=False),
+        # VLM failed but conf >= vlm_drop 0.85 → KEPT.
+        _text_item("keep_hi", 0.90, source="vlm_fallback", vlm_lifted=False),
+        # VLM succeeded (vlm_lifted=True) → always KEPT, even below vlm_drop.
+        _text_item("keep_rescued", 0.55, source="vlm_fallback", vlm_lifted=True),
     ]
     kept = pipe._drop_low_confidence(items)
-    kept_ids = {it.id for it in kept}
-    assert kept_ids == {"t2", "t3"}
+    assert {it.id for it in kept} == {
+        "keep_low", "keep_mid", "keep_hi", "keep_rescued",
+    }
 
 
 def test_drop_low_confidence_keeps_codes_regardless_of_confidence():
@@ -373,91 +504,51 @@ def test_drop_low_confidence_keeps_codes_regardless_of_confidence():
     s = Settings().model_copy(update={
         "rec_confidence_drop": 0.60,
         "rec_confidence_fallback": 0.94,
+        "rec_confidence_vlm_drop": 0.85,
     })
     pipe = Pipeline(s)
     items = [
-        _text_item("t1", 0.50),         # dropped
-        _code_item("q1", 0.20, "qr"),   # kept
-        _code_item("b1", 0.10, "barcode"),  # kept
+        _text_item("t1", 0.50, vlm_lifted=False),  # would drop under rule-2? no: vlm_lifted False & conf 0.50 < 0.85 → drop
+        _code_item("q1", 0.20, "qr"),              # kept
+        _code_item("b1", 0.10, "barcode"),         # kept
     ]
     kept = pipe._drop_low_confidence(items)
     kept_ids = {it.id for it in kept}
     assert kept_ids == {"q1", "b1"}
 
 
-def test_drop_low_confidence_rescued_by_vlm_survives():
-    """An item the VLM lifted above the drop threshold (source=vlm_fallback)
-    must survive — the policy runs AFTER the VLM pass."""
+def test_drop_low_confidence_keeps_art_text():
+    """art_text is high-value copy — it is NOT subject to the VLM-gate drop
+    (only type=='text' is). Consistency fix for P2-6."""
     s = Settings().model_copy(update={
-        "rec_confidence_drop": 0.60,
-        "rec_confidence_fallback": 0.94,
-    })
-    pipe = Pipeline(s)
-    items = [
-        _text_item("t1", 0.70, source="vlm_fallback"),  # rescued above 0.60
-        _text_item("t2", 0.55, source="vlm_fallback"),  # VLM couldn't lift it
-    ]
-    kept = pipe._drop_low_confidence(items)
-    assert {it.id for it in kept} == {"t1"}
-
-
-def test_drop_low_confidence_clamped_when_drop_above_fallback():
-    """Misconfiguration (drop > fallback) is clamped to the fallback value so
-    the re-read set isn't silently widened."""
-    s = Settings().model_copy(update={
-        "rec_confidence_drop": 0.99,       # misconfigured
-        "rec_confidence_fallback": 0.60,
-    })
-    pipe = Pipeline(s)
-    items = [
-        _text_item("t1", 0.50),
-        _text_item("t2", 0.80),  # would be dropped if drop=0.99 were honored
-    ]
-    kept = pipe._drop_low_confidence(items)
-    assert {it.id for it in kept} == {"t2"}
-
-
-def test_drop_low_confidence_rule2_drops_vlm_failed_low_paddleocr():
-    """Rule 2 drops a box the VLM couldn't read (vlm_lifted=False) when its
-    PaddleOCR confidence is also below rec_confidence_vlm_drop.
-
-    Since the VLM no longer contributes to confidence (it's the pure PaddleOCR
-    score), this catches boxes nobody could read confidently.
-    """
-    s = Settings().model_copy(update={
-        "rec_confidence_drop": 0.60,
-        "rec_confidence_fallback": 0.94,
         "rec_confidence_vlm_drop": 0.85,
     })
     pipe = Pipeline(s)
     items = [
-        # VLM failed AND paddleocr only 0.70 (< vlm_drop 0.85) → dropped.
-        _text_item("drop", 0.70, source="vlm_fallback", vlm_lifted=False),
-        # VLM failed but paddleocr 0.90 (>= vlm_drop 0.85) → kept.
-        _text_item("keep", 0.90, source="vlm_fallback", vlm_lifted=False),
+        Item(
+            id="a1", type="art_text", text="ART", recognized=True,
+            polygon=[[0, 0], [10, 0], [10, 10], [0, 10]],
+            bbox=[0, 0, 10, 10], confidence=0.10, source="vlm_fallback",
+            vlm_lifted=False,
+        ),
     ]
     kept = pipe._drop_low_confidence(items)
-    assert {it.id for it in kept} == {"keep"}
+    assert {it.id for it in kept} == {"a1"}
 
 
-def test_drop_low_confidence_rule2_inert_when_not_sent_to_vlm():
-    """Items that never went through the VLM (vlm_lifted=None) are never
-    affected by rule 2 — only rule 1 (the plain confidence floor) applies."""
+def test_drop_low_confidence_rule2_boundary():
+    """Rule-2 boundary: confidence exactly == rec_confidence_vlm_drop is KEPT
+    (the comparison is strict <)."""
     s = Settings().model_copy(update={
-        "rec_confidence_drop": 0.60,
-        "rec_confidence_fallback": 0.94,
         "rec_confidence_vlm_drop": 0.85,
     })
     pipe = Pipeline(s)
     items = [
-        # vlm_lifted=None: rule 2 inert. conf 0.70 >= drop 0.60 → kept, even
-        # though 0.70 < vlm_drop 0.85 (rule 2 doesn't fire).
-        _text_item("t1", 0.70, vlm_lifted=None),
-        # Same but below the rule-1 floor → dropped by rule 1.
-        _text_item("t2", 0.50, vlm_lifted=None),
+        _text_item("boundary", 0.85, source="vlm_fallback", vlm_lifted=False),
+        _text_item("just_below", 0.849, source="vlm_fallback", vlm_lifted=False),
     ]
     kept = pipe._drop_low_confidence(items)
-    assert {it.id for it in kept} == {"t1"}
+    assert {it.id for it in kept} == {"boundary"}
 
 
 # ---------------------------------------------------------------------------

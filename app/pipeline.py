@@ -15,6 +15,7 @@ import base64
 import logging
 import re
 import time
+import unicodedata
 
 from .config import Settings
 from .schemas import AnalyzeResponse, ImageMeta, Item, OCROptions
@@ -31,6 +32,37 @@ from .tiling import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+# Strips leading/trailing whitespace + punctuation (ASCII and Unicode) while
+# leaving letters/digits of ALL scripts (incl. CJK, Hangul, Hiragana) intact.
+#
+# We CANNOT use ``\\W`` for this: under the default Unicode str semantics,
+# ``\\W`` matches every non-ASCII character, so a single CJK char like "京"
+# would be stripped — silently dropping valid single-character labels
+# (license-plate prefixes, seals, single-char copy) as "junk". Instead we
+# build an explicit class from Unicode general categories: whitespace, all
+# Punctuation (P*), and all Symbol (S* — covers currency/math symbols that
+# detectors emit as standalone noise). Built once at import time.
+def _build_edge_junk_pattern() -> "re.Pattern[str]":
+    chars = []
+    for cp in range(0x110000):
+        ch = chr(cp)
+        cat = unicodedata.category(ch)
+        # Zs/Tab/NBSP whitespace
+        if cat == "Zs" or ch in "\t\n\r\f\v ":
+            chars.append(ch)
+        # Punctuation (Pd/Ps/Pe/Pi/Pf/Pc/Po) and Symbols (Sm/Sc/Sk/So)
+        elif cat[0] in ("P", "S"):
+            chars.append(ch)
+    # Escape + build; the set is large but compiled once.
+    return re.compile(
+        "^[" + re.escape("".join(chars)) + "]+|"
+        "[" + re.escape("".join(chars)) + "]+$"
+    )
+
+
+_EDGE_JUNK_RE = _build_edge_junk_pattern()
 
 # Prompt for the circular-region VLM read. A whole ring (logo/seal/badge text on
 # an arc) is cropped as its bounding box and sent with this prompt — the VLM is
@@ -147,12 +179,25 @@ class Pipeline:
         if self.settings.preprocess_autocrop:
             from .preprocess import autocrop
 
-            img, crop_box = autocrop(
+            cropped, cbox = autocrop(
                 img,
                 threshold=self.settings.preprocess_autocrop_threshold,
                 padding=self.settings.preprocess_autocrop_padding,
             )
-            h, w = img.shape[:2]
+            ch, cw = cropped.shape[:2]
+            # Guard against pathological autocrop results (near-blank images that
+            # crop down to a few noise pixels). Below this minimum the cropped
+            # canvas is too small for meaningful detection; fall back to the
+            # pre-crop image so downstream never sees a degenerate tiny frame.
+            _AUTOCROP_MIN_SIDE = 32
+            if min(cw, ch) >= _AUTOCROP_MIN_SIDE:
+                img, crop_box = cropped, cbox
+                h, w = ch, cw
+            else:
+                logger.warning(
+                    "autocrop produced %dx%d (below min %d); using original %dx%d",
+                    cw, ch, _AUTOCROP_MIN_SIDE, w, h,
+                )
         t_pre = time.perf_counter() - t_pre
 
         max_side = max(w, h)
@@ -266,29 +311,27 @@ class Pipeline:
         # required copy, but empty/unrecognized boxes still go (they contribute
         # zero chars to matching). qr/barcode are never touched here. ---
         n_before_clean = len(all_items)
-        all_items = self._clean_items(all_items, keep_short=for_verify, options=options)
+        all_items, clean_breakdown = self._clean_items(
+            all_items, keep_short=for_verify, options=options
+        )
         n_cleaned = n_before_clean - len(all_items)
 
-        # --- confidence policy (POST /analyze only): drop text boxes whose FINAL
-        # confidence is still below rec_confidence_drop after the VLM fallback
-        # pass. VLM re-read happens above, so a box the VLM rescued above the
-        # threshold survives; one that stayed low is discarded. Only text items
-        # are dropped — qr/barcode confidence has different semantics and those
-        # codes are valuable either way. /verify opts out (confidence_policy=False)
-        # because it needs every OCR'd character to match standard copy. ---
+        # --- confidence policy (POST /analyze only): the SINGLE /analyze-specific
+        # cut. The universal floor (min_keep_confidence) already ran in
+        # _clean_items above, so every remaining text box is at or above that
+        # floor; re-applying rec_confidence_drop here would be redundant when the
+        # two defaults match (0.6). What /analyze adds on top is the VLM-gate:
+        # a box the VLM looked at but couldn't read (vlm_lifted is False) AND
+        # whose confidence is still below rec_confidence_vlm_drop — nobody could
+        # read it confidently, so /analyze discards it. /verify opts out
+        # (confidence_policy=False) because it needs every OCR'd character.
+        # qr/barcode are never dropped (different confidence semantics). ---
         n_dropped = 0
-        drop_threshold_used = 0.0
         vlm_drop_threshold_used = 0.0
         if confidence_policy:
             n_before_drop = len(all_items)
             all_items = self._drop_low_confidence(all_items)
             n_dropped = n_before_drop - len(all_items)
-            # Mirror the clamp in _drop_low_confidence so the UI shows the
-            # actually-applied thresholds (not the raw settings).
-            drop_threshold_used = min(
-                self.settings.rec_confidence_drop,
-                self.settings.rec_confidence_fallback,
-            )
             vlm_drop_threshold_used = self.settings.rec_confidence_vlm_drop
 
         all_items = renumber(all_items, prefix="t")
@@ -359,9 +402,19 @@ class Pipeline:
                 "fallback_threshold": vlm_stats.get("threshold", 0.0),
                 "fallback_crops": vlm_stats.get("crops", []),
                 "dropped": n_dropped,
-                "drop_threshold": drop_threshold_used,
                 "vlm_drop_threshold": vlm_drop_threshold_used,
+                "clean_empty": clean_breakdown.get("empty", 0),
+                "clean_unrec": clean_breakdown.get("unrec", 0),
+                "clean_short": clean_breakdown.get("short", 0),
+                "clean_small": clean_breakdown.get("small", 0),
+                "clean_low": clean_breakdown.get("low", 0),
             })
+
+        # Echo the funnel diagnostics back to the caller (built just above).
+        # The WebUI debug view renders this; API callers ignore it. Attached
+        # AFTER stats_sink is populated so the snapshot is complete.
+        if stats_sink is not None:
+            response.stats = dict(stats_sink)
 
         return response
 
@@ -554,13 +607,20 @@ class Pipeline:
             return items, 0, {}
 
         threshold = self.settings.rec_confidence_fallback
-        # Floor below which sending a crop to the VLM is pure waste on the
-        # /analyze path: a box scoring under BOTH the /analyze drop floor
-        # (rec_confidence_drop) AND the universal cleanup floor
-        # (min_keep_confidence) will be discarded downstream regardless of what
-        # the VLM returns — the VLM no longer contributes to confidence (it's
-        # the pure PaddleOCR score), so a 0.40 box stays 0.40 and can't clear
-        # either floor. Skip the cloud call.
+        # Floor below which sending a crop to the VLM is pure waste: a box the
+        # universal cleanup will discard anyway (confidence < min_keep_confidence)
+        # goes no matter what the VLM returns — the VLM no longer contributes to
+        # confidence (it's the pure PaddleOCR score), so a 0.40 box stays 0.40
+        # and can't clear the universal floor. Skip the cloud call.
+        #
+        # NOTE: this floor is intentionally ONLY the universal min_keep_confidence,
+        # NOT the /analyze-specific rec_confidence_drop. The /analyze drop policy
+        # is applied AFTER the VLM pass (see _drop_low_confidence), so a box in
+        # [min_keep_confidence, rec_confidence_drop) deserves a VLM second
+        # opinion before being dropped — seals/art text are systematically
+        # low-scored by PaddleOCR yet readable by the VLM. Folding rec_confidence_
+        # drop into the floor would starve that band of VLM rescues.
+        #
         # /verify is EXEMPT from this floor: it runs cleanup with keep_short=True
         # (low-confidence text is kept) because it needs every readable char to
         # match required copy, so a low PaddleOCR box that the VLM CAN read is
@@ -568,10 +628,7 @@ class Pipeline:
         if for_verify:
             vlm_floor = 0.0
         else:
-            vlm_floor = max(
-                self.settings.rec_confidence_drop,
-                self.settings.min_keep_confidence,
-            )
+            vlm_floor = self.settings.min_keep_confidence
 
         # --- circular regions: find rings first so their members can be pulled
         # out of the low-confidence suspect set (avoid double-sending). ---
@@ -589,11 +646,20 @@ class Pipeline:
         # Only re-read boxes in [vlm_floor, threshold): below vlm_floor they'd
         # be discarded anyway (pure waste of a cloud call); above threshold
         # PaddleOCR is confident enough. Ring members are handled separately.
+        # Also skip boxes that will be dropped by the universal small-box filter
+        # (min_box_side) — sending a 3px speck to the VLM is pure waste too.
+        min_side = self.settings.min_box_side if not for_verify else 0
+        def _too_small(it):
+            if min_side <= 0:
+                return False
+            bx0, by0, bx1, by1 = it.bbox
+            return (bx1 - bx0) < min_side and (by1 - by0) < min_side
         suspect_idx = [
             i for i, it in enumerate(items)
             if it.type == "text"
             and it.source == "paddleocr"
             and vlm_floor <= it.confidence < threshold
+            and not _too_small(it)
             and i not in circle_member_idx
         ]
 
@@ -714,11 +780,11 @@ class Pipeline:
     def _clean_items(
         self, items: list[Item], *, keep_short: bool = False,
         options: "OCROptions | None" = None,
-    ) -> list[Item]:
+    ) -> tuple[list[Item], dict]:
         """Universal content-quality cleanup. Runs on ALL paths.
 
         Drops text/art_text items that are empty, unrecognized, junk-short, or
-        low-confidence, so every caller receives clean, high-confidence results
+        tiny boxes (detector noise), so every caller receives clean results
         without filtering themselves. qr/barcode are NEVER dropped here (decoded
         payloads are valuable regardless of score).
 
@@ -730,17 +796,30 @@ class Pipeline:
         3. Junk-short (skipped when ``keep_short=True``) — after stripping
            leading/trailing whitespace AND punctuation, fewer than
            ``min_text_chars`` effective characters remain (e.g. '.', '，', '-',
-           a lone digit). Catches detector noise.
-        4. Low-confidence (skipped when ``keep_short=True``) — confidence below
-           ``min_keep_confidence`` (default 0.6).
+           a lone ASCII digit). Catches detector noise.
+        4. Small box (skipped when ``keep_short=True``) — bbox with EITHER
+           dimension (width OR height) shorter than ``min_box_side`` pixels.
+           Catches detector crumbs/specks on textured backgrounds. Narrow-but-
+           long boxes (a column of chars, a thin line) are NOT dropped.
+
+        There is NO universal confidence floor anymore: low-confidence but
+        readable text (seals, art text, blurry-but-decodable chars) is kept and
+        left to the per-path VLM-gate policy (``_drop_low_confidence``) and the
+        VLM fallback re-read to decide. ``min_keep_confidence`` remains as a
+        knob but defaults to 0.0 (disabled).
 
         ``keep_short=True`` is used by /verify, which needs every recognizable
         character to match required copy (rules 3-4 exempt), but empty and
         unrecognized boxes still go — they contribute zero chars to matching.
 
         ``options`` carries per-call overrides for rules 3-4
-        (``min_text_chars`` / ``min_keep_confidence``); a None field falls back
-        to the Settings (.env) default, so omitting them is backward compatible.
+        (``min_text_chars`` / ``min_box_side`` / ``min_keep_confidence``); a
+        None field falls back to the Settings (.env) default, so omitting them
+        is backward compatible.
+
+        Returns ``(kept, breakdown)`` where ``breakdown`` carries the per-rule
+        drop counts (``empty`` / ``unrec`` / ``short`` / ``small`` / ``low``)
+        for stats_sink observability.
         """
         # Per-call override → .env default. None on the option means "don't
         # override" (use the server default), which keeps old callers working.
@@ -749,18 +828,32 @@ class Pipeline:
             if options and options.min_text_chars is not None
             else self.settings.min_text_chars
         )
+        min_side = (
+            options.min_box_side
+            if options and options.min_box_side is not None
+            else self.settings.min_box_side
+        )
         min_conf = (
             options.min_keep_confidence
             if options and options.min_keep_confidence is not None
             else self.settings.min_keep_confidence
         )
-        # Leading/trailing punctuation/whitespace to strip when measuring the
-        # "effective" character count for the junk-short rule. Broad on purpose:
-        # covers CJK + ASCII punctuation that detectors emit as standalone noise.
-        _edge_junk = re.compile(r"^[\s\W]+|[\s\W]+$", re.UNICODE)
+        # Leading/trailing whitespace + punctuation to strip when measuring the
+        # "effective" character count for the junk-short rule.
+        #
+        # IMPORTANT: do NOT use ``\\W`` here. Under ``re.UNICODE`` (the default
+        # for str patterns in Py3), ``\\W`` matches EVERY non-ASCII character —
+        # so a lone CJK character like "京" or "沪" (license-plate prefix, seal
+        # text, single-char labels) is treated as "non-word" and stripped to an
+        # empty string, then wrongly dropped as junk. Instead we strip an
+        # explicit punctuation class: ASCII punctuation + the Unicode general
+        # categories P* (Punctuation) and S* (Symbol), leaving letters/digits
+        # of ALL scripts intact. ``regex`` supports \\p{...}; the stdlib ``re``
+        # does not, so we build the class from unicodedata at import time.
+        _edge_junk = _EDGE_JUNK_RE
 
         kept: list[Item] = []
-        n_empty = n_unrec = n_short = n_low = 0
+        n_empty = n_unrec = n_short = n_small = n_low = 0
         for it in items:
             # qr/barcode: always keep, regardless of content or confidence.
             if it.type not in ("text", "art_text"):
@@ -775,13 +868,26 @@ class Pipeline:
                 n_unrec += 1
                 continue
             if not keep_short:
+                # Rule 4 (checked before junk-short, since a tiny box is noise
+                # regardless of its text content): BOTH bbox dimensions below
+                # the floor → drop. "min side" on purpose: a box tiny in only
+                # one axis (narrow-but-tall column, short-but-wide line) is
+                # legitimate copy and is NOT dropped; only crumbs/specks small
+                # in BOTH axes are. min_box_side=0 disables this.
+                if min_side > 0:
+                    bx0, by0, bx1, by1 = it.bbox
+                    bw, bh = bx1 - bx0, by1 - by0
+                    if bw < min_side and bh < min_side:
+                        n_small += 1
+                        continue
                 # Rule 3: junk-short text (noise like lone punctuation/digits).
                 if min_chars > 0:
                     effective = _edge_junk.sub("", it.text)
                     if len(effective) < min_chars:
                         n_short += 1
                         continue
-                # Rule 4: below universal minimum confidence.
+                # Optional confidence floor (default disabled). Kept as an
+                # escape hatch for callers that want a hard score gate.
                 if min_conf > 0.0 and it.confidence < min_conf:
                     n_low += 1
                     continue
@@ -791,64 +897,61 @@ class Pipeline:
         if n_total:
             rules = (
                 f"empty={n_empty} unrec={n_unrec}"
-                + ("" if keep_short else f" short={n_short} low={n_low}")
+                + ("" if keep_short else f" short={n_short} small={n_small} low={n_low}")
             )
             mode = "verify(keep_short)" if keep_short else "full"
             logger.info(
                 "clean_items[%s]: dropped %d/%d text items (%s); qr/barcode kept",
                 mode, n_total, len(items), rules,
             )
-        return kept
+        return kept, {
+            "empty": n_empty, "unrec": n_unrec,
+            "short": n_short, "small": n_small, "low": n_low,
+        }
 
     def _drop_low_confidence(self, items: list[Item]) -> list[Item]:
         """Discard text items per the /analyze confidence policy.
 
         Called only on the POST /analyze path (``confidence_policy=True``).
-        Runs AFTER the VLM fallback pass. Two independent rules — either
-        triggers a drop:
+        Runs AFTER the VLM fallback pass AND AFTER the universal
+        ``_clean_items`` floor (``min_keep_confidence``), so every remaining
+        text item is already at or above that universal floor.
 
-        1. FINAL confidence < ``rec_confidence_drop`` (default 0.60), regardless
-           of VLM involvement.
-        2. Sent to the VLM but it produced no text (``vlm_lifted is False``:
-           the VLM returned empty/garbage), AND confidence <
-           ``rec_confidence_vlm_drop`` (default 0.85). Since the VLM no longer
-           contributes to ``confidence`` (it's the pure PaddleOCR score), this
-           simply drops boxes where BOTH paddleocr was unsure AND the VLM
-           couldn't read it either. Catches boxes nobody could read.
+        The SINGLE /analyze-specific rule (the universal floor does NOT cover
+        it): a box that was SENT to the VLM fallback but produced no readable
+        text (``vlm_lifted is False``: the VLM returned empty/garbage), AND
+        whose confidence is still below ``rec_confidence_vlm_drop`` (default
+        0.85). Since the VLM no longer contributes to ``confidence`` (it's the
+        pure PaddleOCR score), this drops boxes where BOTH PaddleOCR was unsure
+        AND the VLM couldn't read it either — nobody could read it confidently.
 
-        Only ``type == "text"`` items are dropped — qr/barcode confidence has
-        different semantics and those decoded payloads are valuable regardless
-        of score.
+        Why ``rec_confidence_drop`` is no longer applied here: the universal
+        ``_clean_items`` rule-4 already cuts everything below
+        ``min_keep_confidence`` on ALL paths (including /analyze). When the two
+        defaults match (0.6), a second cut here was pure redundancy; when they
+        differ, the universal rule is the correct single source of truth for
+        "never keep below this". /analyze's ONLY addition is the VLM-gate above.
 
-        The rule-1 drop threshold is clamped to ``rec_confidence_fallback`` so
-        a misconfiguration (drop > fallback) can't silently widen the re-read
-        set.
+        Only ``type == "text"`` items are dropped — ``art_text`` is treated as
+        high-value copy (it survived the detector's art-text path) and qr/barcode
+        confidence has different semantics; those decoded payloads are valuable
+        regardless of score.
         """
-        drop = min(
-            self.settings.rec_confidence_drop,
-            self.settings.rec_confidence_fallback,
-        )
         vlm_drop = self.settings.rec_confidence_vlm_drop
         kept = [
             it for it in items
             if it.type != "text"
-            or (
-                # Rule 1: confidence (pure PaddleOCR score — the VLM no longer
-                # contributes to it) must clear the floor.
-                it.confidence >= drop
-                # Rule 2: a box the VLM looked at but couldn't read
-                # (``vlm_lifted is False``) AND the PaddleOCR score is also
-                # below vlm_drop — nobody could read it confidently.
-                and not (it.vlm_lifted is False and it.confidence < vlm_drop)
-            )
+            # The single rule: a box the VLM looked at but couldn't read
+            # (``vlm_lifted is False``) AND the PaddleOCR score is also below
+            # vlm_drop — nobody could read it confidently. Drop it.
+            or not (it.vlm_lifted is False and it.confidence < vlm_drop)
         ]
         n_drop = len(items) - len(kept)
         if n_drop:
             logger.info(
                 "confidence policy: dropped %d/%d text items "
-                "(rule1 conf<%.2f OR rule2 vlm-not-lifted & conf<%.2f; "
-                "kept qr/barcode)",
-                n_drop, len(items), drop, vlm_drop,
+                "(vlm-not-lifted & conf<%.2f; kept qr/barcode/art_text)",
+                n_drop, len(items), vlm_drop,
             )
         return kept
 

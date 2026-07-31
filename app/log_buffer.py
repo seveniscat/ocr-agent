@@ -89,8 +89,14 @@ class LogRecord:
 
     # --- confidence drop policy (/analyze only) ------------------------
     dropped: int = 0                # text boxes dropped for low confidence
-    drop_threshold: float = 0.0     # rec_confidence_drop used this run (rule 1)
-    vlm_drop_threshold: float = 0.0  # rec_confidence_vlm_drop used this run (rule 2)
+    vlm_drop_threshold: float = 0.0  # rec_confidence_vlm_drop used this run
+    # Per-rule breakdown of the universal _clean_items pass (all paths). Lets
+    # the /logs UI show WHY items were dropped, not just how many.
+    clean_empty: int = 0  # rule 1: empty/whitespace text
+    clean_unrec: int = 0  # rule 2: recognized is False
+    clean_short: int = 0  # rule 3: junk-short (< min_text_chars effective)
+    clean_small: int = 0  # rule 4: small box (bbox min side < min_box_side)
+    clean_low: int = 0    # rule 5: confidence < min_keep_confidence (off by default)
 
 
 _BUFFER: "deque[LogRecord]" = deque(maxlen=CAPACITY)

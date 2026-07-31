@@ -82,6 +82,12 @@ class OCROptions(BaseModel):
         description="最短有效字符数。去除首尾空白/标点后少于此次数的项视为噪声丢弃。"
                     "None=用 .env 的 OCR_MIN_TEXT_CHARS。0=禁用。",
     )
+    min_box_side: Optional[int] = Field(
+        None, ge=0, le=200,
+        description="小框噪声过滤: text/art_text 项 bbox 任一边(宽或高)短于此像素值即丢弃。"
+                    "默认按最小边,窄长框(单列字/细长行)不会被误杀。None=用 .env 的 "
+                    "OCR_MIN_BOX_SIDE。0=禁用。",
+    )
 
     # ---- output granularity ----
     granularity: Optional[Granularity] = Field(
@@ -177,6 +183,15 @@ class AnalyzeResponse(BaseModel):
     annotated_image_b64: Optional[str] = None
     # populated only for async responses
     task_id: Optional[str] = None
+    # Optional funnel diagnostics for the WebUI debug view. Populated only when
+    # the caller passes a stats_sink dict into Pipeline.run (the /analyze sync
+    # and async paths do). Keys mirror LogRecord in app/log_buffer.py:
+    # items_before/after, per-stage timings, clean_* breakdown, dropped,
+    # vlm_*, and fallback_crops (per-crop VLM before/after detail, capped at
+    # CAPACITY_CROPS). Weak-typed dict on purpose — it's the same object the
+    # /logs ring buffer consumes, so we don't maintain a second model. API
+    # callers can ignore it; the WebUI debug tab renders it.
+    stats: Optional[dict] = None
 
 
 class TaskStatus(BaseModel):

@@ -298,6 +298,35 @@
   .item .gran { color: var(--muted); font-size: 10px; }
   .item .text { color: var(--text); word-break: break-all; white-space: pre-wrap; }
   .item .src { color: var(--muted); font-size: 10px; margin-top: 2px; }
+  /* VLM-involvement badge on the main item card (debug aid). */
+  .vbadge { display: inline-block; margin-left: 6px; padding: 0 5px; border-radius: 3px;
+            font-size: 9px; line-height: 14px; vertical-align: middle; }
+  .vbadge.ok   { background: rgba(34,197,94,.18);  color: #4ade80; }
+  .vbadge.no   { background: rgba(139,147,167,.18); color: var(--muted); }
+  .vbadge.src  { background: rgba(96,165,250,.18);  color: #60a5fa; }
+
+  /* Debug tab (funnel overview + VLM before/after table). */
+  .dbg-block { padding: 10px 14px; border-bottom: 1px solid var(--border); }
+  .dbg-h { font-size: 12px; font-weight: 600; color: var(--text); margin-bottom: 8px; }
+  .dbg-sub { font-size: 10px; font-weight: 400; color: var(--muted); margin-left: 6px; }
+  .dbg-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 14px; margin-bottom: 8px; }
+  .dbg-grid > div { display: flex; justify-content: space-between; font-size: 11px;
+                    padding: 3px 0; border-bottom: 1px dashed var(--border); }
+  .dbg-grid .k { color: var(--muted); }
+  .dbg-grid .v { color: var(--text); font-variant-numeric: tabular-nums; }
+  .dbg-grid em, .dbg-timing em { font-style: normal; color: var(--muted); font-size: 10px; }
+  .dbg-timing { font-size: 10px; color: var(--muted); }
+  .dbg-timing strong { color: var(--text); }
+  .dbg-empty { color: var(--muted); font-size: 11px; padding: 4px 0; }
+  .dbg-tbl { width: 100%; border-collapse: collapse; font-size: 10px; }
+  .dbg-tbl th { text-align: left; color: var(--muted); font-weight: 500;
+                padding: 4px 6px; border-bottom: 1px solid var(--border); }
+  .dbg-tbl td { padding: 4px 6px; border-bottom: 1px solid var(--border);
+                color: var(--text); word-break: break-all; vertical-align: top; }
+  .dbg-tbl .mono { font-family: ui-monospace, monospace; color: var(--muted); }
+  .dbg-tbl tr.outcome-empty td { opacity: .55; }
+  .dbg-tbl .oc.rescued { color: #4ade80; }
+  .dbg-tbl .oc.empty   { color: var(--muted); }
 
   /* AI understanding cards */
   .und-hero {
@@ -662,6 +691,7 @@
       <div class="tab active" data-tab="items">识别结果 <span id="count"></span></div>
       <div class="tab feature-hidden" data-tab="understand">理解</div>
       <div class="tab feature-hidden" data-tab="verify">校验</div>
+      <div class="tab" data-tab="debug">调试</div>
       <div class="tab" data-tab="json">JSON</div>
     </div>
 
@@ -684,6 +714,9 @@
           </div>
         </div>
         <div id="verifyResults"></div>
+      </div>
+      <div class="pane" id="pane-debug">
+        <div style="color:var(--muted);font-size:12px;padding:14px" id="debugPlaceholder">上传图片后点击「识别」,此处展示漏斗各阶段计数与 VLM 兜底前后变化</div>
       </div>
       <div class="pane" id="pane-json"><pre class="json" id="jsonOut"></pre></div>
     </div>
@@ -2243,6 +2276,7 @@ function render(data) {
   view.items = data.items;
   view.selectedIdx = -1;
   view.activeIdx = -1;
+  view.lastData = data;  // retained so the debug tab can re-render on switch
   drawPolygons();
   $('meta').textContent = `${data.image_meta.width}×${data.image_meta.height} · ${data.image_meta.tile_count} tile`;
   $('count').textContent = `(${data.items.length})`;
@@ -2254,6 +2288,15 @@ function render(data) {
     const cls = it.type==='art_text'?'art':it.type==='qr'?'qr':it.type==='barcode'?'barcode':'';
     const label = it.text || it.content || '(空)';
     const gran = it.granularity ? `<span class="gran">${it.granularity}</span>` : '';
+    // Light debug badge on the main card: surface VLM involvement at a glance.
+    // vlm_lifted true  → VLM re-read succeeded (green)
+    //            false → VLM looked but couldn't read (grey)
+    //   source vlm_fallback (incl. ring rescue, which doesn't set vlm_lifted)
+    const vlmBadge = it.source === 'vlm_fallback'
+      ? '<span class="vbadge src">VLM源</span>'
+      : it.vlm_lifted === true ? '<span class="vbadge ok">VLM✓</span>'
+      : it.vlm_lifted === false ? '<span class="vbadge no">VLM✗</span>'
+      : '';
     const div = document.createElement('div');
     div.className = 'item'; div.dataset.idx = idx;
     div.innerHTML = `
@@ -2262,7 +2305,7 @@ function render(data) {
         <span class="conf">${(it.confidence*100).toFixed(0)}%</span>
       </div>
       <div class="text">${escapeHtml(label)}</div>
-      <div class="src">${it.source} · ${it.id}</div>`;
+      <div class="src">${it.source} · ${it.id}${vlmBadge}</div>`;
     div.addEventListener('mouseenter', () => { view.activeIdx = idx; drawPolygons(); });
     div.addEventListener('mouseleave', () => {
       if (view.activeIdx === idx) { view.activeIdx = -1; drawPolygons(); }
@@ -2271,6 +2314,73 @@ function render(data) {
     pane.appendChild(div);
   });
   $('jsonOut').textContent = JSON.stringify(data, null, 2);
+  renderDebug(data);
+}
+function renderDebug(data) {
+  const pane = $('pane-debug'); pane.innerHTML = '';
+  const s = data && data.stats;
+  if (!s) {
+    pane.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:14px">本次响应未携带漏斗诊断数据</div>';
+    return;
+  }
+  const num = (k, d=0) => (s[k] != null ? s[k] : d);
+  const sec = (k) => {
+    const v = s[k];
+    if (v == null) return '—';
+    return (v < 10 ? v.toFixed(2) : v.toFixed(0)) + 's';
+  };
+  // ---- Block 1: funnel overview ----
+  const before = num('items_before'), after = num('items_after');
+  const det = num('ocr_boxes_detected'), rec = num('ocr_boxes_recognized');
+  const dropped = num('dropped');
+  const cleanTotal = num('clean_empty')+num('clean_unrec')+num('clean_short')+num('clean_small')+num('clean_low');
+  const ov = document.createElement('div'); ov.className = 'dbg-block';
+  ov.innerHTML = `
+    <div class="dbg-h">漏斗总览</div>
+    <div class="dbg-grid">
+      <div><span class="k">OCR 原始</span><span class="v">${before}</span></div>
+      <div><span class="k">最终保留</span><span class="v">${after}</span></div>
+      <div><span class="k">检测框 det/rec</span><span class="v">${det}/${rec}</span></div>
+      <div><span class="k">/analyze 丢弃</span><span class="v">${dropped}${s.vlm_drop_threshold?` <em>(vlm&lt;${s.vlm_drop_threshold.toFixed(2)})</em>`:''}</span></div>
+      <div><span class="k">清洗合计</span><span class="v">${cleanTotal} <em>(空${num('clean_empty')}/未识${num('clean_unrec')}/短${num('clean_short')}/小框${num('clean_small')}/低${num('clean_low')})</em></span></div>
+      <div><span class="k">tiles</span><span class="v">${num('tiles')}</span></div>
+    </div>
+    <div class="dbg-timing">
+      耗时 · 预处理 ${sec('t_preprocess')} / OCR ${sec('t_ocr')} / VLM ${sec('t_vlm')} / dedupe ${sec('t_dedupe')} / 标注 ${sec('t_annotate')} / <strong>合计 ${sec('t_total')}</strong>
+    </div>`;
+  pane.appendChild(ov);
+
+  // ---- Block 2: VLM fallback detail table ----
+  const crops = s.fallback_crops || [];
+  const fb = document.createElement('div'); fb.className = 'dbg-block';
+  const sent = num('vlm_sent'), rescued = num('vlm_rescued'), empty = num('vlm_empty');
+  const th = s.fallback_threshold ? s.fallback_threshold.toFixed(2) : '—';
+  fb.innerHTML = `
+    <div class="dbg-h">VLM 兜底明细 <span class="dbg-sub">sent ${sent} · rescued ${rescued} · empty ${empty} · suspects ${num('vlm_suspects')} · rings ${num('vlm_rings')} · 阈值 ${th}</span></div>`;
+  if (!crops.length) {
+    fb.innerHTML += '<div class="dbg-empty">无 VLM 兜底数据(VLM 未启用,或无低置信项触发)</div>';
+  } else {
+    const tbl = document.createElement('table'); tbl.className = 'dbg-tbl';
+    tbl.innerHTML = `<thead><tr>
+      <th>类型</th><th>框</th><th>PaddleOCR 原文</th><th>置信</th><th>→ VLM 识别</th><th>结果</th>
+    </tr></thead><tbody></tbody>`;
+    const tb = tbl.querySelector('tbody');
+    crops.forEach(c => {
+      const tr = document.createElement('tr');
+      tr.className = 'outcome-' + (c.outcome || '');
+      const conf = c.orig_conf != null ? (c.orig_conf*100).toFixed(0)+'%' : '—';
+      tr.innerHTML = `
+        <td>${c.kind === 'ring' ? '圆弧' : '低置信'}${c.members?` <em>(${c.members})</em>`:''}</td>
+        <td class="mono">${(c.box||[]).join(',')}</td>
+        <td>${escapeHtml(c.orig_text || '(空)')}</td>
+        <td class="mono">${conf}</td>
+        <td>${escapeHtml(c.vlm_text || '(空)')}</td>
+        <td><span class="oc ${c.outcome}">${c.outcome==='rescued'?'✓ 救回':c.outcome==='empty'?'✗ 未读':(c.outcome||'—')}</span></td>`;
+      tb.appendChild(tr);
+    });
+    fb.appendChild(tbl);
+  }
+  pane.appendChild(fb);
 }
 function typeLabel(t){return {text:'文字',art_text:'艺术字',qr:'二维码',barcode:'条码'}[t]||t;}
 function escapeHtml(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}

@@ -184,14 +184,25 @@ class Settings(BaseSettings):
                     "qr/barcode always kept.",
     )
     min_keep_confidence: float = Field(
-        0.6, ge=0.0, le=1.0,
+        0.0, ge=0.0, le=1.0,
         description="Universal minimum confidence for text/art_text items, applied "
-                    "on ALL paths (including async /analyze and /verify-bypass "
-                    "paths) — not just the synchronous /analyze drop policy. Items "
-                    "below this are dropped so callers always receive high-confidence "
-                    "results regardless of entry point. Default 0.6 mirrors "
-                    "rec_confidence_drop; set 0.0 to disable. qr/barcode always kept. "
-                    "/verify is exempt.",
+                    "on ALL paths. Default 0.0 (DISABLED) — low-confidence but "
+                    "readable text (seals, art text, blurry-but-decodable chars) is "
+                    "no longer dropped just for its score; small-box noise is caught "
+                    "by min_box_side instead. Set e.g. 0.5 to re-enable a hard "
+                    "confidence floor. /verify is exempt; qr/barcode always kept.",
+    )
+    min_box_side: int = Field(
+        8, ge=0, le=200,
+        description="Universal small-box noise filter (all paths except /verify): "
+                    "a text/art_text item whose bbox has BOTH dimensions (width AND "
+                    "height) shorter than this (in pixels) is dropped as detector "
+                    "noise — the detector routinely emits 1-7px specks/crumbs on "
+                    "textured backgrounds. 'min side' on purpose: a narrow-but-tall "
+                    "or short-but-wide box (e.g. a column of single chars, a long "
+                    "thin line) is NOT dropped, only boxes tiny in BOTH axes. "
+                    "Default 8. Set 0 to disable. /verify is exempt (needs every "
+                    "char); qr/barcode always kept.",
     )
 
     # ---- Circular / ring-shaped text detection (hard region for line OCR) ----

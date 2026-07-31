@@ -213,7 +213,8 @@ _SINK_FIELDS = (
     "ocr_predict_calls", "ocr_boxes_detected", "ocr_boxes_recognized",
     "vlm_crops", "vlm_sent", "vlm_rescued", "vlm_empty",
     "vlm_suspects", "vlm_rings", "fallback_threshold", "fallback_crops",
-    "dropped", "drop_threshold", "vlm_drop_threshold",
+    "dropped", "vlm_drop_threshold",
+    "clean_empty", "clean_unrec", "clean_short", "clean_small", "clean_low",
 )
 
 
@@ -237,7 +238,6 @@ def _archive_call(
     # bailed before populating it). Types must match LogRecord's dataclass.
     _SINK_DEFAULTS = {
         "fallback_threshold": 0.0,
-        "drop_threshold": 0.0,
         "vlm_drop_threshold": 0.0,
         "fallback_crops": [],
     }
