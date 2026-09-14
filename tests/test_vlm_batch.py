@@ -599,6 +599,57 @@ def test_clean_vlm_text_keeps_unrelated_json():
     assert _clean_vlm_text('{"price": 9.9}') == '{"price": 9.9}'
 
 
+def test_clean_vlm_text_strips_latex_formula():
+    """LaTeX math markup is normalized to plain characters.
+
+    The reported bug: the VLM transcribed a subscripted chemistry formula as
+    "$\\text{C}_{60}$" and that string leaked verbatim into /analyze results.
+    """
+    from app.vlm.qwen import _clean_vlm_text
+    assert _clean_vlm_text("$\\text{C}_{60}$") == "C60"
+    assert _clean_vlm_text("$C_{60}$") == "C60"
+    assert _clean_vlm_text("$\\mathrm{H_2O}$") == "H2O"
+    assert _clean_vlm_text("$V_{max}$") == "Vmax"
+    assert _clean_vlm_text("\\(C_{60}\\)") == "C60"
+
+
+def test_clean_vlm_text_keeps_plain_dollar_text():
+    """Prices / ordinary copy with '$' but no formula markup pass through."""
+    from app.vlm.qwen import _clean_vlm_text
+    assert _clean_vlm_text("$9.9") == "$9.9"
+    assert _clean_vlm_text("售价 10$") == "售价 10$"
+    assert _clean_vlm_text("C60 富勒烯") == "C60 富勒烯"
+
+
+def test_strip_latex_direct():
+    """Unit coverage of the LaTeX normalizer's trigger conditions."""
+    from app.vlm.qwen import _strip_latex
+    # Formula forms.
+    assert _strip_latex("$\\text{C}_{60}$") == "C60"
+    assert _strip_latex("$\\mathbf{C}_{60}$") == "C60"
+    assert _strip_latex("$\\textbf{Fe}_2\\textbf{O}_3$") == "Fe2O3"
+    assert _strip_latex("10^{6}") == "106"
+    # Non-LaTeX strings untouched.
+    assert _strip_latex("user_name: $9.9") == "user_name: $9.9"
+    assert _strip_latex("纯文本，无公式") == "纯文本，无公式"
+
+
+def test_parse_ocr_items_strips_latex_in_text_not_codes():
+    """VLM-engine text payloads are LaTeX-normalized; qr/barcode payloads are
+    NOT (machine-decoded strings like URLs may legitimately contain $ and _)."""
+    from app.vlm_ocr import _parse_ocr_items
+    raw = (
+        '{"items": ['
+        '{"type": "text", "text": "$\\\\text{C}_{60}$", '
+        '"bbox": [0.1, 0.1, 0.3, 0.2], "confidence": 0.9},'
+        '{"type": "barcode", "content": "http://x.com/a?b_$c", '
+        '"bbox": [0.5, 0.5, 0.8, 0.6], "confidence": 0.9}'
+        ']}'
+    )
+    items = _parse_ocr_items(raw, img_w=100, img_h=100)
+    assert [it[1] for it in items] == ["C60", "http://x.com/a?b_$c"]
+
+
 
 
 def _stub_client_tracking_calls(vlm: QwenVLM):

@@ -47,6 +47,7 @@ from .tiling import (
 )
 from .understanding import _encode_for_vlm, _extract_json
 from .vlm.base import VLMProvider
+from .vlm.qwen import _strip_latex
 
 if TYPE_CHECKING:
     import numpy as np
@@ -87,6 +88,7 @@ _OCR_PROMPT = """你是一个包装图像 OCR 与定位专家。请仔细观察�
 - text/art_text 用 "text" 字段；qr/barcode 用 "content" 字段（若无法解码可不填或留空）。
 - 坐标尽量贴合元素边界，不要框得过大。
 - 文字必须严格照抄图中原文，不可补全、纠正或臆测不可读的字符；看不清的字用 confidence 反映，不要瞎猜内容。
+- 上下标（化学式、单位等）照抄为普通字符（如 C60、H2O、m2），禁止输出 LaTeX/公式记法（不要出现 $、\\text、_{...}、^{...}）。
 - confidence 是你对这个识别结果（文字内容和 bbox）的真实把握程度：0.9+ 表示文字清晰、边界明确；0.6-0.9 表示部分模糊但可辨；0.6 以下表示很不确定。必须如实自评，不要一律给高分。
 - 只输出 JSON 对象本身，不要任何解释文字、不要 markdown 代码围栏。"""
 
@@ -359,12 +361,16 @@ def _parse_ocr_items(
         if norm is None:
             continue
         # payload: text for text/art_text, content for qr/barcode — but accept
-        # whichever key the model actually provided.
+        # whichever key the model actually provided. Text payloads are
+        # LaTeX-normalized (VLMs render sub/superscripted copy like C₆₀ as
+        # "$\text{C}_{60}$"). QR/barcode payloads are deliberately NOT: they're
+        # machine-decoded strings (often URLs) where a "$"+"_" pair is
+        # legitimate and stripping would corrupt the payload.
         payload = ""
         if itype in ("qr", "barcode"):
             payload = str(e.get("content") or e.get("text") or "").strip()
         else:
-            payload = str(e.get("text") or e.get("content") or "").strip()
+            payload = _strip_latex(str(e.get("text") or e.get("content") or ""))
         conf = _norm_confidence(e.get("confidence"), fallback_conf)
         out.append((itype, payload, norm, conf))
     return out

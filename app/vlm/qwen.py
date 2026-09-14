@@ -31,8 +31,74 @@ _PROMPT = (
     "EMPTY instead. Accuracy over coverage — an honest EMPTY is better than a "
     "wrong guess. "
     "When you do return text, output ONLY the recognized text itself — no "
-    "quotes, no commentary, no JSON, no code fences."
+    "quotes, no commentary, no JSON, no code fences. "
+    "Subscripts/superscripts (chemical formulas, units) must be written as "
+    "plain characters inline (C60, H2O, m2) — never LaTeX/math markup "
+    "(no $...$, no \\text, no _{} or ^{})."
 )
+
+# LaTeX math markup that VLMs habitually emit for sub/superscripted text: the
+# chemistry notation C₆₀ comes back as ``$\text{C}_{60}$`` instead of "C60".
+# Packaging copy is plain text, so we normalize it back to literal characters.
+# Any ``\command{arg}`` keeps its arg; braced / single-char ``_``/``^`` keep
+# their characters inline; leftover bare commands and math delimiters drop.
+
+# \text{C} / \mathrm{H} / \mathbf{x} ... → inner content (one nesting level
+# per pass; applied in a loop).
+_LATEX_CMD_ARG_RE = re.compile(r"\\[A-Za-z]+\s*\{([^{}]*)\}")
+# _{60} / ^{2} → inner content.
+_LATEX_SUBSUP_BRACE_RE = re.compile(r"[_^]\s*\{([^{}]*)\}")
+# _2 / ^n → the character (brace-less single-char form).
+_LATEX_SUBSUP_SINGLE_RE = re.compile(r"[_^]\s*([A-Za-z0-9])")
+# Escaped specials \% \& \_ \{ \} \# → the literal character.
+_LATEX_ESCAPE_RE = re.compile(r"\\([%&_{}#])")
+# Leftover bare commands (\cdot, \left, \,) and math-mode delimiters \( \) \[
+# \] — dropped. Runs only when the string already looks like LaTeX, so a
+# backslash in ordinary copy is never touched.
+_LATEX_CMD_BARE_RE = re.compile(r"\\(?:[A-Za-z]+|.)")
+
+
+def _looks_like_latex(s: str) -> bool:
+    r"""Heuristic gate for LaTeX normalization.
+
+    Fires on: formula markup between PAIRED ``$...$`` (``$H_2O$``), a braced
+    sub/superscript anywhere (``C_{60}``, ``10^{6}``), or a ``\command`` token
+    / ``\(`` ``\[`` math-mode opener (``$\text{C}_{60}$``). Deliberately does
+    NOT fire on a lone ``$`` next to a bare ``_`` — prices ("$9.9") and
+    snake_case must pass through untouched; normalizing those would corrupt
+    legitimate copy.
+    """
+    if re.search(r"\$[^$]+[_^][^$]*\$", s):  # markup between paired $...$
+        return True
+    if re.search(r"[_^]\s*\{", s):  # braced sub/superscript: C_{60}, 10^{6}
+        return True
+    return bool(re.search(r"\\[A-Za-z]+|\\\(|\\\[", s))
+
+
+def _strip_latex(s: str) -> str:
+    r"""Normalize LaTeX math markup to plain characters.
+
+    ``$\text{C}_{60}$`` → ``C60``, ``$\mathrm{H_2O}$`` → ``H2O``,
+    ``$V_{max}$`` → ``Vmax``. Superscript semantics are intentionally
+    flattened (``10^{6}`` → ``106``) — packaging copy needs the characters,
+    not the typesetting. Applied ONLY when the string looks like LaTeX (see
+    :func:`_looks_like_latex`) so ordinary text with ``$`` passes through
+    unchanged.
+    """
+    if not _looks_like_latex(s):
+        return s
+    out = s
+    for _ in range(3):  # unwind nested \cmd{...\cmd{...}} one level per pass
+        replaced = _LATEX_CMD_ARG_RE.sub(r"\1", out)
+        if replaced == out:
+            break
+        out = replaced
+    out = _LATEX_SUBSUP_BRACE_RE.sub(r"\1", out)
+    out = _LATEX_SUBSUP_SINGLE_RE.sub(r"\1", out)
+    out = _LATEX_ESCAPE_RE.sub(r"\1", out)
+    out = _LATEX_CMD_BARE_RE.sub("", out)
+    out = out.replace("$", "")
+    return re.sub(r"\s{2,}", " ", out).strip()
 
 
 def _clean_vlm_text(raw: str) -> str | None:
@@ -52,9 +118,10 @@ def _clean_vlm_text(raw: str) -> str | None:
     as a failed read and keeps the original PaddleOCR result.
 
     Returns:
-        The cleaned text (leading/trailing quotes/whitespace stripped), or
-        ``None`` when the response is empty, the literal ``EMPTY`` sentinel,
-        or a JSON/fenced block (model abandoned the plain-text format).
+        The cleaned text (leading/trailing quotes/whitespace stripped, LaTeX
+        math markup normalized to plain characters), or ``None`` when the
+        response is empty, the literal ``EMPTY`` sentinel, or a JSON/fenced
+        block (model abandoned the plain-text format).
     """
     s = (raw or "").strip()
     if not s or s.upper() == "EMPTY":
@@ -81,8 +148,10 @@ def _clean_vlm_text(raw: str) -> str | None:
                 raw[:80],
             )
             return None
-    # Strip a leading/trailing quote the model sometimes adds.
-    return re.sub(r"^['\"]|['\"]$", "", s)
+    # Strip a leading/trailing quote the model sometimes adds, then normalize
+    # LaTeX math markup ($\text{C}_{60}$ → C60) — the model's habitual rendering
+    # of sub/superscripted formulas, which must not leak into OCR copy verbatim.
+    return _strip_latex(re.sub(r"^['\"]|['\"]$", "", s))
 
 
 
