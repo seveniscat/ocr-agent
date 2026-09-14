@@ -486,6 +486,44 @@ class Settings(BaseSettings):
                     "there; flag for review). Below this → 'missing'.",
     )
 
+    # ---- Feishu ops alerts (POST /analyze slow requests + failures) ----
+    # When a bot webhook is configured, app/perf_alert.py pushes a text message
+    # to a Feishu group whenever /analyze runs longer than a size-aware
+    # threshold (base + per-megapixel allowance — OCR time scales with pixel
+    # count, so one fixed number would either spam on large die-lines or never
+    # fire on small artwork) or fails outright. Empty URL = alerting fully off.
+    feishu_webhook_url: str = Field(
+        "",
+        description="Feishu custom-bot webhook URL (open.feishu.cn/open-apis/bot/"
+        "v2/hook/...). Empty disables all Feishu alerting.",
+    )
+    feishu_secret: str = Field(
+        "",
+        description="Optional signing secret when the bot is created with 加签 "
+        "(sign key). Empty sends unsigned.",
+    )
+    alert_slow_base_seconds: float = Field(
+        30.0, ge=0.0,
+        description="Base slow threshold in seconds, independent of image size.",
+    )
+    alert_slow_seconds_per_mp: float = Field(
+        5.0, ge=0.0,
+        description="Extra slow-threshold allowance per megapixel "
+        "(threshold = base + per_mp * w*h/1e6). Both this and base at 0 "
+        "disables slow alerts (failure alerts stay governed by alert_on_error).",
+    )
+    alert_cooldown_seconds: float = Field(
+        300.0, ge=0.0,
+        description="Minimum seconds between two alerts of the same kind "
+        "(slow / error are cooled down independently) so one bad batch can't "
+        "flood the group.",
+    )
+    alert_on_error: bool = Field(
+        True,
+        description="Also alert (separate cooldown) when /analyze fails — "
+        "sync 503s and async task errors alike.",
+    )
+
     # ---- HTTP / CORS ----
     # Comma-separated list of origins allowed by the browser for cross-origin
     # XHR/fetch calls (e.g. an internal web UI on a different host/port). "*"

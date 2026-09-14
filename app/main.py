@@ -42,6 +42,7 @@ from .log_buffer import (
     log_buffer_snapshot as _snapshot_calls,
 )
 from .pipeline import Pipeline
+from .perf_alert import alerter as _alerter
 from .schemas import (
     AnalyzeResponse,
     BatchStatus,
@@ -619,6 +620,14 @@ async def analyze(
                 w=w, h=h, stats_sink=stats_sink,
                 status="error", error=f"{type(exc).__name__}: {exc}",
             )
+            _fire_alert(
+                _alerter.record_analyze(
+                    duration_s=time.perf_counter() - t_start,
+                    status="error", settings=settings,
+                    error=f"{type(exc).__name__}: {exc}",
+                    w=w, h=h, src=src, stats_sink=stats_sink,
+                )
+            )
             # Config errors aren't transient (no Retry-After); plain 503.
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         except Exception as exc:
@@ -637,6 +646,14 @@ async def analyze(
                 w=w, h=h, stats_sink=stats_sink,
                 status="error", error=f"{type(exc).__name__}: {exc}",
             )
+            _fire_alert(
+                _alerter.record_analyze(
+                    duration_s=time.perf_counter() - t_start,
+                    status="error", settings=settings,
+                    error=f"{type(exc).__name__}: {exc}",
+                    w=w, h=h, src=src, stats_sink=stats_sink,
+                )
+            )
             # JSONResponse (not HTTPException) so we can attach Retry-After.
             return JSONResponse(
                 status_code=503,
@@ -651,6 +668,18 @@ async def analyze(
             src=src,
             engine=opt_obj.engine if opt_obj and opt_obj.engine else settings.ocr_engine_default,
             w=w, h=h, stats_sink=stats_sink,
+        )
+        # Slow-request alert: end-to-end duration (includes URL fetch + OCR
+        # pool queue wait — a backlog IS the 卡顿 users feel, even when each
+        # individual pipeline run is fast). No-op unless a bot is configured
+        # and the size-aware threshold + cooldown both pass.
+        _fire_alert(
+            _alerter.record_analyze(
+                duration_s=time.perf_counter() - t_start,
+                status="ok", settings=settings,
+                w=w, h=h, src=src,
+                items=len(resp.items), stats_sink=stats_sink,
+            )
         )
 
         # When a callback is requested, also publish the result under a task_id
@@ -702,6 +731,11 @@ async def analyze(
     )
     _register_batch_task(batch_no, resolved_id)
 
+    # End-to-end start for the perf alert: t_accept → done/error includes the
+    # OCR pool queue wait, unlike the `t` captured inside _run() below (which
+    # starts when a worker actually picks the job up — pipeline time only).
+    t_accept = time.perf_counter()
+
     def _run():
         t = time.perf_counter()
         stats_sink: dict = {}
@@ -724,6 +758,14 @@ async def analyze(
                 engine=opt_obj.engine if opt_obj and opt_obj.engine else settings.ocr_engine_default,
                 w=w, h=h, stats_sink=stats_sink, task_id=resolved_id,
             )
+            _fire_alert(
+                _alerter.record_analyze(
+                    duration_s=time.perf_counter() - t_accept,
+                    status="ok", settings=settings,
+                    w=w, h=h, src=src, task_id=resolved_id,
+                    items=len(resp.items), stats_sink=stats_sink,
+                )
+            )
             _fire_webhook(
                 resolved_id, "done",
                 callback_url=callback_url,
@@ -744,6 +786,15 @@ async def analyze(
                 engine=opt_obj.engine if opt_obj and opt_obj.engine else settings.ocr_engine_default,
                 w=w, h=h, stats_sink=stats_sink, task_id=resolved_id,
                 status="error", error=err,
+            )
+            _fire_alert(
+                _alerter.record_analyze(
+                    duration_s=time.perf_counter() - t_accept,
+                    status="error", settings=settings,
+                    error=err,
+                    w=w, h=h, src=src, task_id=resolved_id,
+                    stats_sink=stats_sink,
+                )
             )
             # Notify on failure too — the receiver otherwise can't tell a slow
             # job from a dead one and would poll forever.
@@ -842,6 +893,24 @@ def _fire_webhook(
         error,
         batch_no=batch_no,
         location=location,
+    )
+
+
+def _fire_alert(text: str | None) -> None:
+    """Enqueue a Feishu ops alert — fire-and-forget, same pool as webhooks.
+
+    ``perf_alert.record_analyze`` already gated on the bot URL + cooldowns and
+    returned None when nothing should be sent, so this is a no-op in the
+    common (quiet) case. Delivery failures are logged inside feishu.send_text
+    and never propagate.
+    """
+    if not text:
+        return
+    from .feishu import send_text
+
+    settings = _settings()
+    _webhook_executor.submit(
+        send_text, text, settings.feishu_webhook_url, settings.feishu_secret
     )
 
 

@@ -238,6 +238,12 @@ make understand URL=https://你的图.png             # AI 理解"这张图是�
 | `OCR_LARGE_IMAGE_THRESHOLD` | `4000` | Long edge above → async (202) |
 | `OCR_URL_FETCH_TIMEOUT` | `30` | URL download connect/read timeout (seconds) |
 | `OCR_URL_FETCH_MAX_BYTES` | `104857600` | Abort URL download once body exceeds this (100MB) |
+| `OCR_FEISHU_WEBHOOK_URL` | _empty_ | 飞书自定义机器人 webhook；空 = 不启用告警 |
+| `OCR_FEISHU_SECRET` | _empty_ | 机器人加签密钥（创建时选了「加签」才需要） |
+| `OCR_ALERT_SLOW_BASE_SECONDS` | `30` | 慢请求阈值基数（秒），与图片大小无关的部分 |
+| `OCR_ALERT_SLOW_SECONDS_PER_MP` | `5` | 每兆像素额外放宽的秒数：阈值 = base + per_mp × (w×h/1e6)；两项全 0 = 关闭慢请求告警 |
+| `OCR_ALERT_COOLDOWN_SECONDS` | `300` | 同类告警（慢/失败各自独立）最小间隔，防轰炸 |
+| `OCR_ALERT_ON_ERROR` | `true` | `/analyze` 失败（同步 503 / 异步任务 error）时也推飞书 |
 
 ## Tests
 
