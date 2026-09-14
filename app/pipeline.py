@@ -405,6 +405,7 @@ class Pipeline:
                 "vlm_rings": vlm_stats.get("rings", 0),
                 "fallback_threshold": vlm_stats.get("threshold", 0.0),
                 "fallback_crops": vlm_stats.get("crops", []),
+                "fallback_crop_images": vlm_stats.get("crop_images", []),
                 "dropped": n_dropped,
                 "vlm_drop_threshold": vlm_drop_threshold_used,
                 "clean_empty": clean_breakdown.get("empty", 0),
@@ -418,7 +419,14 @@ class Pipeline:
         # The WebUI debug view renders this; API callers ignore it. Attached
         # AFTER stats_sink is populated so the snapshot is complete.
         if stats_sink is not None:
-            response.stats = dict(stats_sink)
+            # The raw crop thumbnails must NOT ride into the response: stats is
+            # JSON-serialized for /analyze callers, and bytes aren't serializable.
+            # The log buffer's _archive_call reads the images from the sink dict
+            # itself, so the UI still gets them via GET /logs/crop/{id}/{idx}.
+            response.stats = {
+                k: v for k, v in stats_sink.items()
+                if k != "fallback_crop_images"
+            }
 
         return response
 
@@ -571,6 +579,47 @@ class Pipeline:
                     )
         return all_items, grid
 
+    # --- VLM fallback crop thumbnails (for the /logs UI) -------------------
+    # Crops larger than this are downscaled for the thumbnail; smaller ones are
+    # stored as-is (the UI upscales via CSS). JPEG keeps a typical crop at a
+    # few KB so the log_buffer image store's byte budget stretches far.
+    _CROP_THUMB_MAX_SIDE = 200
+    _CROP_THUMB_JPEG_QUALITY = 70
+
+    def _crop_thumbnail(self, img, box: list[float]) -> "bytes | None":
+        """JPEG thumbnail of ``img`` at ``box`` = [x0,y0,x1,y1], for the /logs
+        crop viewer. Best-effort: any failure returns None and the UI shows no
+        image — a thumbnail must never break the OCR path."""
+        try:
+            import io
+
+            from PIL import Image
+
+            h, w = img.shape[:2]
+            x0 = max(0, int(round(box[0])))
+            y0 = max(0, int(round(box[1])))
+            x1 = min(w, int(round(box[2])))
+            y1 = min(h, int(round(box[3])))
+            if x1 - x0 < 1 or y1 - y0 < 1:
+                return None
+            crop = img[y0:y1, x0:x1]
+            pil = Image.fromarray(crop) if crop.ndim == 3 else Image.fromarray(crop, mode="L")
+            side = max(pil.width, pil.height)
+            if side > self._CROP_THUMB_MAX_SIDE:
+                scale = self._CROP_THUMB_MAX_SIDE / side
+                pil = pil.resize(
+                    (
+                        max(1, round(pil.width * scale)),
+                        max(1, round(pil.height * scale)),
+                    )
+                )
+            buf = io.BytesIO()
+            pil.save(buf, format="JPEG", quality=self._CROP_THUMB_JPEG_QUALITY)
+            return buf.getvalue()
+        except Exception:  # noqa: BLE001 — best-effort by design
+            logger.debug("crop thumbnail encode failed", exc_info=True)
+            return None
+
     def _maybe_vlm_fallback(
         self, img, items: list[Item], *, for_verify: bool = False
     ) -> tuple[list[Item], int, dict]:
@@ -693,8 +742,11 @@ class Pipeline:
         out = list(items)
         n_rescued = n_empty = 0
         # Per-crop breakdown for the /logs UI detail view. Bounded in length
-        # below; the aggregate counts stay complete regardless.
+        # below; the aggregate counts stay complete regardless. crop_images is
+        # the aligned list of JPEG thumbnails (same truncation) served by
+        # GET /logs/crop/{rec_id}/{idx}; entries can be None on encode failure.
         crop_details: list[dict] = []
+        crop_images: list[bytes | None] = []
         # Low-confidence suspects: 1:1 text replacement.
         # The VLM does text recognition only — it returns no usable score, so
         # "success" = "non-empty text". Confidence is NEVER taken from the VLM:
@@ -730,6 +782,7 @@ class Pipeline:
                 "vlm_text": new_text,
                 "outcome": outcome,
             })
+            crop_images.append(self._crop_thumbnail(img, it.bbox))
         # Circular regions: the VLM read the WHOLE ring as one string. Put it on
         # the representative member (top-most by bbox y1); leave other members'
         # text alone so the ring string isn't duplicated across boxes.
@@ -762,6 +815,7 @@ class Pipeline:
                 "outcome": outcome,
                 "members": len(region.member_indices),
             })
+            crop_images.append(self._crop_thumbnail(img, rbox))
         logger.info(
             "vlm fallback: sent=%d rescued=%d empty=%d "
             "(suspects=%d rings=%d threshold=%.2f)",
@@ -777,6 +831,7 @@ class Pipeline:
             "rings": len(circular),
             "threshold": threshold,
             "crops": crop_details[:CAPACITY_CROPS],
+            "crop_images": crop_images[:CAPACITY_CROPS],
         }
 
     def _clean_items(

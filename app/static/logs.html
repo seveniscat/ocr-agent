@@ -129,6 +129,15 @@
   }
   .crop-kind.kind-suspect { color: var(--warn); border-color: var(--warn); }
   .crop-kind.kind-ring { color: var(--accent); border-color: var(--accent); }
+  /* VLM crop thumbnail — the image the VLM was actually shown. Click opens
+     the full-size crop in a new tab (href is set onload, so 404s aren't
+     navigable); onerror hides the cell content when no image was stored. */
+  .crop-img-cell { width: 130px; }
+  .crop-thumb {
+    display: block; max-width: 120px; max-height: 44px;
+    border: 1px solid var(--border); border-radius: 3px;
+    background: var(--panel);
+  }
   .out-rescued { color: var(--accent-2); }
   .out-empty { color: var(--muted); }
   .crops-count, .crops-truncated {
@@ -294,14 +303,14 @@ function renderDetail(r) {
   // Per-crop fallback breakdown — only when any crop was sent to the VLM.
   const crops = r.fallback_crops || [];
   if (crops.length > 0) {
-    html += renderFallbackCrops(crops, r.vlm_sent, r.fallback_crops ? r.fallback_crops.length : 0);
+    html += renderFallbackCrops(crops, r.vlm_sent, r.fallback_crops ? r.fallback_crops.length : 0, r.id);
   }
   return html;
 }
 
 // Sub-table: one row per crop the VLM looked at.
-// Columns: # | 类型 | bbox | OCR原文(conf) | → | VLM识别(conf) | 结果
-function renderFallbackCrops(crops, totalSent, shownCount) {
+// Columns: # | 图 | 类型 | bbox | OCR原文(conf) | → | VLM识别(conf) | 结果
+function renderFallbackCrops(crops, totalSent, shownCount, recordId) {
   const rowsHtml = crops.map((c, i) => {
     const isRing = c.kind === "ring";
     const kindLabel = isRing ? `圆弧 (${c.members || 0}元)` : "低置信";
@@ -324,8 +333,16 @@ function renderFallbackCrops(crops, totalSent, shownCount) {
     // that differs). Rings always show a plain arrow.
     const changed = !isRing && c.vlm_text && c.orig_text !== c.vlm_text;
     const arrow = changed ? `<span class="crop-arrow" title="文字改变">→✎</span>` : `<span class="crop-arrow">→</span>`;
+    // Crop thumbnail: what the VLM was actually shown for this re-read.
+    // Lazy-loaded from the image store; hidden when evicted/failed. The
+    // anchor href is only set onload, so a missing image is never clickable.
+    const imgUrl = recordId != null ? `/logs/crop/${recordId}/${i}` : null;
+    const thumb = imgUrl
+      ? `<a target="_blank"><img class="crop-thumb" loading="lazy" alt="crop" src="${imgUrl}" onerror="this.style.display='none'" onload="this.parentElement.href=this.src"></a>`
+      : `<span class="crop-na">—</span>`;
     return `<tr>
       <td class="num">${i + 1}</td>
+      <td class="crop-img-cell">${thumb}</td>
       <td><span class="crop-kind ${kindCls}">${kindLabel}</span></td>
       <td class="num crop-box">${box}</td>
       <td>${orig}${origConf}</td>
@@ -341,7 +358,7 @@ function renderFallbackCrops(crops, totalSent, shownCount) {
     <div class="crops-title">VLM 兜底明细</div>
     <table class="crops-table">
       <thead><tr>
-        <th>#</th><th>类型</th><th>bbox</th>
+        <th>#</th><th>图</th><th>类型</th><th>bbox</th>
         <th>OCR 原文 (conf)</th><th></th>
         <th>VLM 识别 (conf)</th><th>结果</th>
       </tr></thead>

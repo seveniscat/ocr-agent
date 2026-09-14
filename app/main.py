@@ -169,6 +169,27 @@ def logs_api(limit: int = Query(200, ge=1, le=500)) -> dict:
     return {"records": _snapshot_calls(limit=limit), "total": _buffer_count()}
 
 
+@app.get("/logs/crop/{rec_id}/{idx}", tags=["logs"])
+def logs_crop_image(rec_id: int, idx: int) -> Response:
+    """JPEG thumbnail of the crop at ``fallback_crops[idx]`` for record
+    ``rec_id`` — the image the VLM was actually shown for that re-read.
+
+    404 when the record is unknown/evicted (in-memory ring + byte budget),
+    the index is out of range, or the thumbnail encode failed — the UI's
+    onerror simply hides the image.
+    """
+    from .log_buffer import log_buffer_crop_image
+
+    data = log_buffer_crop_image(rec_id, idx)
+    if data is None:
+        raise HTTPException(status_code=404, detail="crop image not available")
+    return Response(
+        content=data,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "private, max-age=3600"},
+    )
+
+
 def _get_pipeline() -> Pipeline:
     """Lazy singleton — OCR model loads on first use, not import."""
     global _pipeline
@@ -243,7 +264,7 @@ def _archive_call(
         "fallback_crops": [],
     }
     kwargs = {k: stats_sink.get(k, _SINK_DEFAULTS.get(k, 0)) for k in _SINK_FIELDS}
-    _record_call(LogRecord(
+    rec = LogRecord(
         ts=time.time(),
         task_id=task_id,
         src=src,
@@ -253,7 +274,11 @@ def _archive_call(
         width=w,
         height=h,
         **kwargs,
-    ))
+    )
+    # VLM crop thumbnails are NOT LogRecord fields (kept out of the JSON
+    # snapshot on purpose) — they ride alongside in the sink and land in the
+    # log buffer's parallel image store, served by GET /logs/crop/{id}/{idx}.
+    _record_call(rec, crop_images=stats_sink.get("fallback_crop_images") or [])
 
 
 async def _resolve_image(

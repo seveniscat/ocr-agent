@@ -13,6 +13,7 @@ Trade-offs (deliberate, matching the existing ``_tasks`` dict pattern):
 
 from __future__ import annotations
 
+import itertools
 import threading
 from collections import deque
 from dataclasses import asdict, dataclass, field
@@ -98,15 +99,79 @@ class LogRecord:
     clean_small: int = 0  # rule 4: small box (bbox min side < min_box_side)
     clean_low: int = 0    # rule 5: confidence < min_keep_confidence (off by default)
 
+    # Stable record id, assigned by log_buffer_record. Lives last only because
+    # dataclass field ordering requires defaults after non-defaults — it's the
+    # key the /logs/crop image endpoint looks up (ts alone isn't unique when
+    # calls arrive in the same millisecond).
+    id: int = 0
+
 
 _BUFFER: "deque[LogRecord]" = deque(maxlen=CAPACITY)
 _LOCK = threading.Lock()
 
 
-def log_buffer_record(rec: LogRecord) -> None:
-    """Append a record. Oldest is evicted once CAPACITY is exceeded."""
+# ---------------------------------------------------------------------------
+# VLM crop thumbnails — parallel image store for the /logs UI
+# ---------------------------------------------------------------------------
+# Raw JPEG thumbnails of the crops sent to the VLM (aligned with the record's
+# fallback_crops detail list by index), keyed by LogRecord.id. Deliberately
+# KEPT OUTSIDE LogRecord: asdict() feeds the /logs/api JSON response, and
+# embedding hundreds of base64 images there would balloon every UI refresh.
+# The UI fetches them lazily via GET /logs/crop/{rec_id}/{idx}.
+#
+# Bounded twice over: only records that sent crops register images, and the
+# store FIFO-evicts oldest records first once the total byte budget is hit.
+# Monotonic ids make oldest = smallest id.
+
+# Total bytes of JPEG thumbnails retained across all records. A typical crop
+# thumbnail is a few KB, so this comfortably holds the last few hundred
+# records' images while capping worst-case memory.
+IMAGES_MAX_BYTES = 64 * 1024 * 1024
+
+_IMAGES: "deque[tuple[int, list[bytes]]]" = deque()
+_IMAGES_BYTES = 0
+_NEXT_ID = itertools.count(1)
+
+
+def log_buffer_record(
+    rec: LogRecord, crop_images: list | None = None
+) -> None:
+    """Append a record (and optionally its VLM crop thumbnails).
+
+    Assigns the record's stable ``id``. ``crop_images`` must be a list of JPEG
+    byte strings aligned with the record's ``fallback_crops`` entries; None /
+    non-bytes entries (encode failures) are skipped so the UI's onerror hides
+    just those thumbnails. Oldest records/images are evicted per the buffers'
+    bounds.
+    """
+    global _IMAGES_BYTES
     with _LOCK:
+        rec.id = next(_NEXT_ID)
         _BUFFER.append(rec)
+        if crop_images:
+            payload = [bytes(im) for im in crop_images if isinstance(im, (bytes, bytearray))]
+            if payload:
+                _IMAGES.append((rec.id, payload))
+                _IMAGES_BYTES += sum(len(im) for im in payload)
+                while _IMAGES_BYTES > IMAGES_MAX_BYTES and len(_IMAGES) > 1:
+                    _dropped_id, dropped = _IMAGES.popleft()
+                    _IMAGES_BYTES -= sum(len(im) for im in dropped)
+
+
+def log_buffer_crop_image(rec_id: int, idx: int) -> bytes | None:
+    """JPEG bytes of crop ``idx`` for record ``rec_id``, or None.
+
+    Records are searched newest-first (ids are monotonic); a record whose
+    images were byte-budget-evicted, a bad index, or an encode failure all
+    return None — the UI treats that as "no thumbnail" and hides the image.
+    """
+    with _LOCK:
+        for rid, images in reversed(_IMAGES):
+            if rid == rec_id:
+                if 0 <= idx < len(images):
+                    return images[idx]
+                return None
+    return None
 
 
 def log_buffer_snapshot(limit: int = 200) -> list[dict]:
@@ -127,6 +192,9 @@ def log_buffer_count() -> int:
 
 
 def clear() -> None:
-    """Drop all records (used by tests / manual reset; not exposed in UI)."""
+    """Drop all records and crop images (tests / manual reset; not in UI)."""
+    global _IMAGES_BYTES
     with _LOCK:
         _BUFFER.clear()
+        _IMAGES.clear()
+        _IMAGES_BYTES = 0
